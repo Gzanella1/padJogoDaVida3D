@@ -1,130 +1,622 @@
 # Explicacao do Codigo
 
-Este projeto mostra uma simulacao do Jogo da Vida em uma cena 3D usando WebGPU.
-A ideia central e simples:
+Este documento explica o codigo do projeto com mais calma.
+A ideia nao e so dizer "esse arquivo faz tal coisa", mas explicar:
 
-1. guardar um grid de celulas vivas ou mortas;
-2. atualizar esse grid na GPU com as regras do Jogo da Vida;
-3. pegar apenas as celulas vivas;
-4. desenhar um cubo pequeno para cada celula viva.
+- o que e cada conceito;
+- para que ele serve;
+- como ele aparece no codigo;
+- como tudo se conecta para formar os cubos na tela.
 
-Mesmo que voce chame de "quadrados", na tela eles aparecem como cubos 3D.
-Cada cubo e feito de faces quadradas, mas a GPU desenha essas faces usando triangulos.
+O projeto e uma visualizacao 3D do Jogo da Vida. Ele usa JavaScript puro,
+WebGPU e shaders. A simulacao e o desenho ficam principalmente na GPU.
 
-## Entrada da Aplicacao
+## Mapa Mental do Projeto
 
-O arquivo `intdex.html` cria a pagina e o canvas:
+Antes de entrar nos arquivos, pense no projeto como uma fabrica:
+
+```text
+main.js
+  liga a fabrica e coordena tudo
+
+LifeSimulation3D.js
+  calcula quais celulas estao vivas ou mortas
+
+simulationShader.js
+  faz a conta da simulacao dentro da GPU
+
+LifeRenderer3D.js
+  prepara e manda desenhar os cubos
+
+renderPrepShader.js
+  cria uma lista so com as celulas vivas
+
+renderShader.js
+  posiciona e colore cada cubo na tela
+
+Camera.js
+  calcula de onde o usuario esta olhando
+
+Controls.js
+  transforma mouse e teclado em movimento da camera
+
+math.js
+  guarda as funcoes matematicas usadas pela camera e pela cena
+```
+
+O arquivo `intdex.html` cria a pagina e o canvas onde tudo sera desenhado.
+
+## Conceitos Basicos Antes do Codigo
+
+### O Que E WebGPU
+
+WebGPU e uma API do navegador que permite usar a GPU diretamente.
+
+GPU significa "placa de video" ou "processador grafico".
+Ela e muito boa em fazer muitas contas parecidas ao mesmo tempo.
+
+Neste projeto, a GPU faz duas coisas importantes:
+
+- calcula a proxima geracao do Jogo da Vida;
+- desenha muitos cubos na tela.
+
+O JavaScript nao desenha cubo por cubo. Ele prepara os dados e manda comandos.
+A GPU executa esses comandos.
+
+### O Que E Canvas
+
+O canvas e uma area da pagina onde o navegador pode desenhar.
+
+No HTML:
 
 ```html
 <canvas id="lifeCanvas"></canvas>
 ```
 
-Esse canvas e onde o WebGPU desenha tudo.
+No JavaScript:
 
-No HTML tambem existe uma barra de controles, mas ela esta comentada no momento.
-Por isso, a aplicacao atual roda automaticamente com valores fixos definidos em `src/main.js`:
+```js
+const canvas = document.querySelector("#lifeCanvas");
+const context = canvas.getContext("webgpu");
+```
 
-- velocidade da simulacao: `8`;
-- rotacao automatica: ligada;
-- tamanho do grid: `24 x 24 x 16`.
+Isso significa:
 
-## Arquivo Principal
+- `canvas` e o elemento visual;
+- `context` e a ligacao entre o canvas e o WebGPU.
 
-O arquivo `src/main.js` e o ponto de partida do JavaScript.
+### O Que E Device
 
-Ele faz estas etapas:
+O `device` representa o acesso ao hardware da GPU.
 
-1. procura o canvas na pagina;
-2. verifica se o navegador suporta WebGPU;
-3. pede um adaptador de GPU;
-4. cria o `device`, que e o objeto usado para conversar com a GPU;
-5. configura o contexto WebGPU do canvas;
-6. cria a camera;
-7. cria os controles de mouse e teclado;
-8. cria a simulacao;
-9. cria o renderizador;
-10. inicia o loop de frames com `requestAnimationFrame`.
+No `main.js`:
 
-O loop principal fica dentro da funcao `frame(now)`.
-Em cada frame ele:
+```js
+const adapter = await navigator.gpu.requestAdapter({
+  powerPreference: "high-performance",
+});
 
-1. calcula o tempo que passou desde o frame anterior;
-2. atualiza os controles da camera;
-3. cria um `GPUCommandEncoder`;
-4. executa passos da simulacao se estiver tocando;
-5. renderiza a cena;
-6. envia os comandos para a GPU;
-7. chama o proximo frame.
+const device = await adapter.requestDevice();
+```
 
-## Simulacao
+O `adapter` e como escolher uma GPU disponivel.
+O `device` e como abrir uma conexao com essa GPU.
 
-A simulacao fica em `src/LifeSimulation3D.js`.
+Quase tudo no projeto passa pelo `device`:
 
-Ela cria dois buffers de estado:
+- criar buffers;
+- criar shaders;
+- criar pipelines;
+- enviar dados;
+- enviar comandos.
 
-- `Life state A`;
-- `Life state B`.
+### O Que E Buffer
 
-Esses buffers funcionam em ping-pong:
+Buffer e um bloco de memoria na GPU.
 
-- em um passo, a GPU le o buffer A e escreve o resultado no B;
-- no passo seguinte, a GPU le o B e escreve no A.
+Ele serve para guardar dados que os shaders vao usar.
 
-Isso e necessario porque a proxima geracao precisa ser calculada a partir da geracao antiga inteira.
-Se o mesmo buffer fosse lido e escrito ao mesmo tempo, uma celula poderia mudar antes de suas vizinhas serem calculadas.
+Exemplos neste projeto:
 
-Cada celula e um numero `u32`:
+- estado das celulas;
+- vertices do cubo;
+- indices dos triangulos;
+- lista das celulas vivas;
+- dados da camera;
+- argumentos para desenhar indiretamente.
 
-- `0` significa morta;
-- `1` ate `255` significa viva;
-- esse numero tambem representa a idade da celula.
+Pense em buffer como uma tabela de numeros que fica dentro da GPU.
 
-A idade depois e usada para mudar brilho e cor.
+### O Que E Shader
 
-## Shader da Simulacao
+Shader e um programa pequeno que roda na GPU.
 
-O arquivo `src/shaders/simulationShader.js` contem o compute shader que atualiza as celulas.
+Neste projeto existem tres tipos de shader:
 
-Esse shader roda na GPU.
-Cada invocacao do shader cuida de uma celula do grid.
+- compute shader: faz calculos gerais;
+- vertex shader: calcula a posicao dos vertices;
+- fragment shader: calcula a cor dos pixels.
 
-Para cada celula ele:
+Os shaders do projeto estao em:
 
-1. descobre a posicao `x`, `y`, `z`;
-2. conta os 8 vizinhos na mesma camada `z`;
-3. aplica as regras do Conway classico;
-4. grava o novo estado no buffer de saida.
+```text
+src/shaders/simulationShader.js
+src/shaders/renderPrepShader.js
+src/shaders/renderShader.js
+```
 
-As regras usadas sao:
+Eles sao escritos em WGSL, a linguagem de shader do WebGPU.
 
-- uma celula morta nasce se tiver exatamente 3 vizinhos vivos;
-- uma celula viva continua viva se tiver 2 ou 3 vizinhos vivos;
-- nos outros casos ela morre.
+### O Que E Pipeline
 
-O `z` cria varias camadas empilhadas.
-Cada camada funciona como um tabuleiro 2D separado, mas todas sao desenhadas no espaco 3D.
+Pipeline e a configuracao que diz para a GPU como executar um shader.
 
-## Como os Quadrados Foram Feitos
+Um shader sozinho e so codigo.
+O pipeline diz:
 
-Os "quadrados" visuais ficam em `src/LifeRenderer3D.js`, na funcao `createCubeGeometry()`.
+- qual shader sera usado;
+- quais buffers entram;
+- qual formato de vertice existe;
+- se vai desenhar triangulos;
+- se vai usar profundidade;
+- se vai misturar transparencia;
+- qual funcao do shader e o ponto de entrada.
 
-Na verdade, o codigo cria a geometria de um cubo.
-Um cubo tem 6 faces quadradas:
+No projeto existem pipelines para:
 
-- frente;
-- tras;
-- direita;
-- esquerda;
-- cima;
-- baixo.
+- simular celulas;
+- compactar celulas vivas;
+- renderizar cubos.
 
-Cada face tem 4 cantos.
-No codigo, cada face tem:
+### O Que E Bind Group
 
-- uma normal, usada para iluminacao;
-- quatro vertices, que sao os cantos daquela face.
+Bind group e um pacote que conecta buffers aos shaders.
 
-Exemplo conceitual de uma face:
+Um shader pode dizer:
+
+```wgsl
+@group(0) @binding(1) var<storage, read> stateIn: array<u32>;
+```
+
+Isso significa:
+
+"No grupo 0, binding 1, eu espero receber um buffer chamado `stateIn`."
+
+No JavaScript, o bind group entrega esse buffer:
+
+```js
+entries: [
+  { binding: 1, resource: { buffer: this.stateBuffers[0] } },
+]
+```
+
+Entao:
+
+- shader declara o que quer;
+- JavaScript cria o bind group com os buffers certos;
+- GPU junta as duas coisas.
+
+### O Que E Command Encoder
+
+O `GPUCommandEncoder` e onde o JavaScript grava comandos para a GPU.
+
+No `main.js`:
+
+```js
+const encoder = device.createCommandEncoder({ label: "Life frame encoder" });
+```
+
+Durante o frame, o codigo adiciona comandos nesse encoder:
+
+- rode a simulacao;
+- compacte as celulas vivas;
+- renderize a cena.
+
+No final:
+
+```js
+device.queue.submit([encoder.finish()]);
+```
+
+Isso envia os comandos para a GPU executar.
+
+## Entrada: `intdex.html`
+
+O arquivo `intdex.html` e a pagina do projeto.
+
+Ele contem:
+
+- o canvas principal;
+- estilos visuais;
+- uma mensagem de erro caso WebGPU nao esteja disponivel;
+- o import do JavaScript principal.
+
+O import e:
+
+```html
+<script type="module" src="./src/main.js"></script>
+```
+
+`type="module"` permite usar `import` e `export` nos arquivos JavaScript.
+
+A barra de controles existe no HTML, mas esta comentada.
+Por isso, na versao atual, o projeto roda com valores fixos definidos em
+`src/main.js`.
+
+## Arquivo `src/main.js`
+
+O `main.js` e o coordenador da aplicacao.
+Ele nao faz a matematica pesada nem desenha os cubos diretamente.
+Ele organiza quem faz cada trabalho.
+
+### Valores Iniciais
+
+No topo:
+
+```js
+const DEFAULT_SIMULATION_SPEED = 8;
+const DEFAULT_AUTO_ROTATE = true;
+const DEFAULT_GRID_DIMENSIONS = { x: 24, y: 24, z: 16 };
+```
+
+Isso quer dizer:
+
+- a simulacao tenta rodar 8 passos por segundo;
+- a cena gira automaticamente;
+- o grid tem largura 24, altura 24 e 16 camadas.
+
+### Verificacao do WebGPU
+
+O codigo verifica:
+
+```js
+if (!navigator.gpu) {
+  showUnsupported(...);
+  return;
+}
+```
+
+Se o navegador nao tiver WebGPU, nao adianta continuar.
+Entao ele mostra uma mensagem de erro.
+
+### Criacao das Pecas Principais
+
+Depois que o WebGPU esta pronto, o `main.js` cria:
+
+```js
+const camera = new Camera();
+const controls = new Controls(canvas, camera);
+const simulation = new LifeSimulation3D(device, readGridInputs());
+camera.fitToGrid(simulation.dimensions);
+const renderer = new LifeRenderer3D(device, context, canvas, format, simulation);
+```
+
+Cada linha cria uma parte:
+
+- `Camera`: define de onde a cena e vista;
+- `Controls`: liga mouse e teclado na camera;
+- `LifeSimulation3D`: cria e atualiza as celulas;
+- `LifeRenderer3D`: desenha os cubos.
+
+### Loop Principal
+
+A funcao `frame(now)` roda uma vez por quadro da animacao.
+
+Ela e chamada por:
+
+```js
+requestAnimationFrame(frame);
+```
+
+Dentro do frame acontecem estas etapas:
+
+```text
+1. calcula deltaTime
+2. atualiza camera pelos controles
+3. cria encoder de comandos
+4. roda passos da simulacao
+5. renderiza a cena
+6. envia comandos para GPU
+7. pede o proximo frame
+```
+
+`deltaTime` e o tempo entre um frame e outro.
+Ele e importante porque o computador pode rodar a 60 FPS, 144 FPS ou menos.
+Usar tempo real evita que a simulacao dependa totalmente da velocidade da tela.
+
+## Arquivo `src/LifeSimulation3D.js`
+
+Este arquivo cuida da vida e morte das celulas.
+
+Ele nao cuida da camera nem da cor.
+Ele so responde:
+
+```text
+qual celula esta viva?
+qual celula esta morta?
+qual sera o proximo estado?
+```
+
+### Estado da Celula
+
+Cada celula e guardada como um numero inteiro `u32`.
+
+```text
+0      = morta
+1..255 = viva
+```
+
+Quando a celula esta viva, o numero tambem representa idade.
+
+Exemplo:
+
+```text
+0  -> morta
+1  -> acabou de nascer
+8  -> viva ha 8 passos
+255 -> viva ha muito tempo, travada no limite maximo
+```
+
+A idade serve para efeito visual.
+Celulas novas podem brilhar diferente das antigas.
+
+### Por Que Existem Dois Buffers
+
+O codigo cria:
+
+```js
+this.stateBuffers = [
+  device.createBuffer(...),
+  device.createBuffer(...),
+];
+```
+
+Esses dois buffers sao chamados de A e B.
+
+Eles existem porque a proxima geracao precisa ser calculada olhando a geracao
+antiga inteira.
+
+Se voce calculasse tudo no mesmo lugar, aconteceria um problema:
+
+```text
+celula 1 muda
+celula 2 olha para celula 1
+mas agora celula 1 ja esta com valor novo
+```
+
+Isso misturaria passado e futuro.
+
+Com dois buffers:
+
+```text
+passo 1: le A e escreve B
+passo 2: le B e escreve A
+passo 3: le A e escreve B
+```
+
+Esse padrao se chama ping-pong buffer.
+
+### Criacao do Grid
+
+No metodo `resize(dimensions)`, o codigo ajusta o tamanho:
+
+```js
+const x = alignDimension(dimensions.x, 8, 64);
+const y = alignDimension(dimensions.y, 8, 64);
+const z = alignDimension(dimensions.z, 1, 48);
+```
+
+Isso impede tamanhos absurdos.
+
+Depois calcula:
+
+```js
+this.total = x * y * z;
+```
+
+Com `24 x 24 x 16`, o total e:
+
+```text
+24 * 24 * 16 = 9216 celulas
+```
+
+### Estado Inicial Aleatorio
+
+O metodo `randomize()` preenche o primeiro buffer com celulas vivas e mortas.
+
+Ele usa:
+
+```js
+Math.random() < density * bias
+```
+
+Isso significa:
+
+- `density` define a chance base de uma celula nascer viva;
+- `bias` muda essa chance dependendo da distancia ate o centro.
+
+Por isso o estado inicial nao e totalmente uniforme.
+Ele tende a ficar mais interessante visualmente.
+
+### Passo da Simulacao
+
+O metodo `encodeStep(encoder)` adiciona um compute pass no encoder.
+
+Ele faz:
+
+```js
+pass.setPipeline(this.pipeline);
+pass.setBindGroup(0, this.bindGroups[this.currentStateIndex]);
+pass.dispatchWorkgroups(...);
+```
+
+Traduzindo:
+
+- use o pipeline da simulacao;
+- use o bind group que le o estado atual e escreve no outro buffer;
+- execute varios grupos de trabalho na GPU.
+
+Depois:
+
+```js
+this.currentStateIndex = 1 - this.currentStateIndex;
+```
+
+Isso troca o buffer atual:
+
+```text
+se era 0, vira 1
+se era 1, vira 0
+```
+
+## Arquivo `src/shaders/simulationShader.js`
+
+Este shader calcula a regra do Jogo da Vida.
+
+Ele roda uma vez para cada celula.
+
+### Workgroup
+
+No arquivo:
+
+```js
+export const SIM_WORKGROUP_SIZE = 4;
+```
+
+E no shader:
+
+```wgsl
+@compute @workgroup_size(4, 4, 4)
+```
+
+Isso quer dizer que cada grupo de trabalho tem:
+
+```text
+4 * 4 * 4 = 64 invocacoes
+```
+
+Cada invocacao calcula uma celula.
+
+### Entrada e Saida
+
+O shader recebe:
+
+```wgsl
+@binding(0) params
+@binding(1) stateIn
+@binding(2) stateOut
+```
+
+Significado:
+
+- `params`: dimensoes do grid e regras;
+- `stateIn`: estado antigo;
+- `stateOut`: estado novo.
+
+### Contagem de Vizinhos
+
+O shader percorre:
+
+```wgsl
+for (var dy = -1i; dy <= 1i; dy = dy + 1i) {
+  for (var dx = -1i; dx <= 1i; dx = dx + 1i) {
+```
+
+Ele olha os vizinhos em volta da celula.
+Quando `dx == 0` e `dy == 0`, ele pula, porque isso seria a propria celula.
+
+Importante: ele conta vizinhos na mesma camada `z`.
+Ou seja, cada camada do grid funciona como um Jogo da Vida 2D separado.
+
+### Regras B3/S23
+
+O codigo usa:
+
+```wgsl
+let born = activeNeighbors == params.rules.x;
+let survives = activeNeighbors >= params.rules.y && activeNeighbors <= params.rules.z;
+```
+
+No JavaScript, as regras sao:
+
+```js
+birth: 3,
+surviveMin: 2,
+surviveMax: 3,
+```
+
+Entao:
+
+- celula morta nasce com exatamente 3 vizinhos;
+- celula viva sobrevive com 2 ou 3 vizinhos;
+- caso contrario morre.
+
+## Arquivo `src/LifeRenderer3D.js`
+
+Este arquivo cuida de transformar celulas vivas em cubos visiveis.
+
+Ele faz quatro trabalhos grandes:
+
+1. cria a geometria base do cubo;
+2. cria pipelines de renderizacao e compactacao;
+3. cria buffers usados no desenho;
+4. desenha uma instancia do cubo para cada celula viva.
+
+## Como Foram Feitos os Quadrados/Cubos
+
+Na tela, voce ve pequenos "quadrados" com profundidade.
+Tecnicamente eles sao cubos 3D.
+
+Cada cubo tem 6 faces quadradas:
+
+```text
+frente
+tras
+direita
+esquerda
+cima
+baixo
+```
+
+No codigo, isso aparece na funcao `createCubeGeometry()`:
+
+```js
+const faces = [
+  { normal: [0, 0, 1], corners: [...] },
+  { normal: [0, 0, -1], corners: [...] },
+  ...
+];
+```
+
+Cada item representa uma face do cubo.
+
+### O Que E Um Vertice
+
+Vertice e um ponto no espaco.
+
+Um ponto 3D tem tres coordenadas:
+
+```text
+x, y, z
+```
+
+Exemplo:
+
+```text
+[-1, -1, 1]
+```
+
+Esse ponto esta:
+
+- 1 unidade para a esquerda no eixo x;
+- 1 unidade para baixo no eixo y;
+- 1 unidade para frente no eixo z.
+
+### O Que E Uma Face
+
+Uma face quadrada do cubo tem quatro cantos.
+
+Visualmente:
 
 ```text
 v0 ----- v1
@@ -133,205 +625,357 @@ v0 ----- v1
 v3 ----- v2
 ```
 
-Mas a GPU desenha triangulos, nao quadrados diretamente.
-Entao cada face quadrada e dividida em 2 triangulos:
+Mas a GPU nao desenha quadrados diretamente.
+Ela desenha triangulos.
+
+Entao cada quadrado vira dois triangulos:
 
 ```text
 triangulo 1: v0, v1, v2
 triangulo 2: v0, v2, v3
 ```
 
-Como o cubo tem 6 faces:
+No codigo:
 
-- 6 faces x 4 vertices = 24 vertices;
-- 6 faces x 2 triangulos = 12 triangulos;
-- 12 triangulos x 3 indices = 36 indices.
+```js
+indices.push(
+  vertexOffset,
+  vertexOffset + 1,
+  vertexOffset + 2,
+  vertexOffset,
+  vertexOffset + 2,
+  vertexOffset + 3,
+);
+```
 
-Por isso o shader de preparacao coloca `indexCount = 36u`.
-Isso quer dizer: para desenhar um cubo, use 36 indices.
+Isso cria os dois triangulos da face.
 
-## Por Que Cada Face Tem Seus Proprios Vertices
+### Por Que O Cubo Tem 24 Vertices E Nao 8
 
-Um cubo geometrico poderia ter apenas 8 cantos.
-Mas aqui o codigo usa 24 vertices, porque cada face precisa de uma normal propria.
+Um cubo simples tem 8 cantos.
+Entao parece que bastariam 8 vertices.
 
-A normal e a direcao para onde a face aponta.
-Ela serve para calcular a luz.
+Mas o codigo cria 4 vertices para cada face:
 
-Se os 8 cantos fossem compartilhados por todas as faces, a iluminacao ficaria arredondada.
-Com 24 vertices, cada face fica plana e com aparencia de cubo.
+```text
+6 faces * 4 vertices = 24 vertices
+```
 
-## Vertex Buffer e Index Buffer
+Isso e feito por causa das normais.
 
-Depois de criar a geometria, o renderizador cria dois buffers:
+### O Que E Normal
 
-- `vertexBuffer`: guarda as posicoes dos vertices e as normais;
-- `indexBuffer`: guarda a ordem em que os vertices formam triangulos.
+Normal e uma seta perpendicular a uma face.
+
+Exemplos:
+
+```text
+face da frente:  [0, 0, 1]
+face de tras:    [0, 0, -1]
+face de cima:    [0, 1, 0]
+face de baixo:   [0, -1, 0]
+```
+
+A normal serve para calcular luz.
+
+Se os vertices fossem compartilhados por varias faces, a GPU misturaria as
+normais e a luz poderia parecer arredondada. Como cada face tem seus proprios
+vertices, cada face recebe uma normal reta e o cubo fica com cara de cubo.
+
+### Vertex Buffer
+
+Depois que os vertices sao criados, eles vao para o `vertexBuffer`.
+
+O vertex buffer guarda:
+
+```text
+posicao do vertice
+normal do vertice
+```
 
 Cada vertice tem 6 numeros:
 
-- 3 para a posicao: `x`, `y`, `z`;
-- 3 para a normal: `nx`, `ny`, `nz`.
-
-Cada numero e um `float32`, com 4 bytes.
-Entao cada vertice ocupa:
-
 ```text
-6 floats x 4 bytes = 24 bytes
+x, y, z, normalX, normalY, normalZ
 ```
 
-Por isso o pipeline usa:
+Cada numero e `float32`, ou seja, 4 bytes.
+
+```text
+6 * 4 = 24 bytes por vertice
+```
+
+Por isso o pipeline tem:
 
 ```js
 arrayStride: 24
 ```
 
-## Instancias: Um Cubo Para Cada Celula Viva
+### Index Buffer
 
-O projeto nao cria um cubo novo manualmente para cada celula.
-Ele cria uma unica geometria de cubo e manda a GPU repetir essa geometria varias vezes.
+O index buffer guarda a ordem de montagem dos triangulos.
+
+Em vez de repetir todos os pontos, a GPU le os indices e sabe:
+
+```text
+pegue vertice 0
+pegue vertice 1
+pegue vertice 2
+forme um triangulo
+```
+
+Como cada face tem 2 triangulos:
+
+```text
+6 faces * 2 triangulos * 3 vertices = 36 indices
+```
+
+Por isso cada cubo usa 36 indices.
+
+## Instancing: Repetindo O Mesmo Cubo
+
+O projeto nao cria 9000 geometrias diferentes.
+Ele cria uma geometria de cubo uma vez e reutiliza.
 
 Isso se chama instancing.
 
-O fluxo e:
+O pensamento e:
 
-1. a geometria do cubo e criada uma vez;
-2. a GPU monta uma lista so com as celulas vivas;
-3. cada celula viva vira uma instancia do mesmo cubo;
-4. o vertex shader posiciona cada instancia no lugar certo do grid.
+```text
+tenho um modelo de cubo
+para cada celula viva:
+  desenhe esse mesmo cubo em outra posicao
+```
 
-Isso e muito mais eficiente do que criar milhares de objetos separados em JavaScript.
+A GPU recebe:
 
-## Preparacao da Renderizacao
+- o cubo base;
+- uma lista de celulas vivas;
+- a quantidade de cubos que precisa desenhar.
 
-O arquivo `src/shaders/renderPrepShader.js` prepara a lista de celulas vivas.
+Depois ela repete a geometria automaticamente.
 
-Ele tem dois compute shaders:
+## Arquivo `src/shaders/renderPrepShader.js`
 
-- `indirectResetShader`;
-- `aliveCompactShader`.
+Antes de desenhar, o projeto precisa saber quais celulas estao vivas.
 
-O `indirectResetShader` zera os argumentos de desenho antes de cada frame.
-Ele tambem coloca `indexCount = 36`, porque cada cubo usa 36 indices.
+Desenhar todas as celulas seria desperdicio, porque celulas mortas nao aparecem.
 
-O `aliveCompactShader` percorre todas as celulas.
-Quando encontra uma celula viva, ele adiciona essa celula no buffer `aliveCells`.
+Entao existe uma etapa de preparacao:
 
-Esse buffer guarda:
+```text
+estado completo das celulas
+  -> compactacao
+lista so das celulas vivas
+```
 
-- o indice da celula;
-- a idade da celula nos bits mais altos.
+### `indirectResetShader`
 
-No final, a GPU sabe exatamente quantos cubos precisa desenhar.
+Esse shader prepara os argumentos do desenho.
 
-## Shader de Renderizacao
+Ele coloca:
 
-O arquivo `src/shaders/renderShader.js` desenha os cubos.
+```wgsl
+drawArgs.indexCount = 36u;
+instanceCount = 0
+```
 
-No vertex shader, cada instancia recebe um `instance_index`.
-Esse indice diz qual celula viva esta sendo desenhada.
+`indexCount = 36` porque um cubo usa 36 indices.
 
-O shader faz:
+`instanceCount = 0` porque antes de contar as celulas vivas ainda nao sabemos
+quantos cubos serao desenhados.
 
-1. pega a celula em `aliveCells[instance]`;
-2. separa o indice da celula e a idade;
-3. converte o indice linear para coordenadas `x`, `y`, `z`;
-4. centraliza o grid no espaco 3D;
-5. aplica a escala do cubo;
-6. aplica a rotacao do modelo;
-7. aplica a camera;
-8. manda o vertice para a tela.
+### `aliveCompactShader`
 
-A linha mais importante para posicionar o cubo e esta:
+Esse shader percorre todas as celulas.
+
+Quando encontra uma celula viva:
+
+```wgsl
+let slot = atomicAdd(&drawArgs.instanceCount, 1u);
+aliveCells[slot] = (age << 24u) | index;
+```
+
+Isso faz duas coisas:
+
+1. aumenta a quantidade de instancias vivas;
+2. salva a celula no buffer `aliveCells`.
+
+`atomicAdd` e usado porque muitas invocacoes da GPU podem encontrar celulas
+vivas ao mesmo tempo. O atomic garante que cada uma pegue uma posicao diferente
+na lista.
+
+## Arquivo `src/shaders/renderShader.js`
+
+Este shader realmente desenha os cubos.
+
+Ele tem duas partes:
+
+- vertex shader;
+- fragment shader.
+
+### Vertex Shader
+
+O vertex shader roda para cada vertice de cada cubo.
+
+Ele recebe:
+
+- posicao do vertice no cubo base;
+- normal do vertice;
+- indice da instancia atual.
+
+Com o indice da instancia, ele encontra qual celula viva esta sendo desenhada:
+
+```wgsl
+let packedCell = aliveCells[instance];
+```
+
+Depois separa:
+
+```wgsl
+let cellIndex = packedCell & 0x00ffffffu;
+let age = f32(packedCell >> 24u) / 255.0;
+```
+
+Isso quer dizer:
+
+- os bits baixos guardam o indice da celula;
+- os bits altos guardam a idade.
+
+Depois o shader converte o indice para coordenada `x, y, z` com `cellCoord`.
+
+### Posicionamento Do Cubo
+
+A linha principal e:
 
 ```wgsl
 let localPosition = centered + input.position * cubeScale;
 ```
 
-Ela significa:
+Ela combina duas coisas:
 
-- `centered` e o centro da celula no grid;
-- `input.position` e o formato base do cubo, indo de `-1` ate `1`;
-- `cubeScale` diminui o cubo para caber dentro do espaco da celula;
-- a soma coloca aquele vertice no lugar certo.
+- `centered`: centro da celula dentro do grid;
+- `input.position * cubeScale`: formato do cubo, reduzido para caber na celula.
 
-## Cores e Brilho
+Pense assim:
 
-O fragment shader, tambem em `renderShader.js`, calcula a cor final de cada pixel do cubo.
+```text
+centered = onde o cubo deve ficar
+input.position = formato do cubo
+cubeScale = tamanho do cubo
+```
+
+Depois:
+
+```wgsl
+let world = uniforms.model * vec4f(localPosition, 1.0);
+output.position = uniforms.viewProjection * world;
+```
+
+Isso aplica:
+
+- rotacao do modelo;
+- camera;
+- perspectiva.
+
+### Fragment Shader
+
+O fragment shader calcula a cor de cada pixel do cubo.
 
 Ele usa:
 
-- a posicao da celula para variar a cor;
-- a idade da celula para destacar celulas novas;
-- uma luz direcional;
-- um brilho de borda;
-- uma pulsacao com seno;
-- transparencia leve.
+- posicao da celula para variar a cor;
+- idade para dar brilho diferente em celulas novas;
+- normal para calcular luz;
+- direcao da camera para criar brilho nas bordas;
+- tempo para pulsar.
 
-Por isso os cubos ficam com visual neon.
+Por isso os cubos ficam coloridos, iluminados e com brilho neon.
 
-## Camera
+## Arquivo `src/Camera.js`
 
-A camera fica em `src/Camera.js`.
+A camera define de onde o usuario olha a cena.
 
-Ela usa:
+Ela guarda:
 
-- `target`: ponto para onde a camera olha;
-- `distance`: distancia ate o alvo;
-- `yaw`: rotacao horizontal;
-- `pitch`: rotacao vertical;
-- `fov`: campo de visao.
+```text
+target   = ponto observado
+distance = distancia ate esse ponto
+yaw      = rotacao horizontal
+pitch    = rotacao vertical
+fov      = abertura da lente
+```
 
-Ela calcula duas matrizes:
+O metodo `getPosition()` calcula a posicao da camera ao redor do alvo.
 
-- a matriz de visao, que posiciona a camera;
-- a matriz de perspectiva, que cria profundidade.
+O metodo `getViewProjection(aspect)` cria a matriz que transforma o mundo 3D
+em imagem 2D na tela.
 
-As duas sao multiplicadas e viram `viewProjection`.
-Essa matriz e enviada para o shader para transformar o mundo 3D em tela 2D.
+Essa matriz e enviada para o shader.
 
-## Controles
+## Arquivo `src/Controls.js`
 
-Os controles ficam em `src/Controls.js`.
+Os controles transformam entradas do usuario em movimento da camera.
 
-Eles conectam mouse, scroll e teclado na camera:
+Eventos usados:
 
-- arrastar com mouse: orbita;
-- shift + arrastar: pan;
-- botao do meio ou direito: pan;
-- scroll: zoom;
-- `W`, `A`, `S`, `D`: move a camera;
-- `Q` e `E`: desce e sobe.
+- `pointerdown`;
+- `pointermove`;
+- `pointerup`;
+- `wheel`;
+- `keydown`;
+- `keyup`.
 
-## Matematica
+O mouse orbita ou move a camera.
+O scroll aproxima e afasta.
+O teclado move o alvo da camera.
 
-O arquivo `src/math.js` tem as funcoes matematicas usadas pelo projeto.
+## Arquivo `src/math.js`
 
-Ele implementa:
+Este arquivo existe porque WebGPU nao traz automaticamente uma biblioteca de
+matrizes para o JavaScript.
+
+Entao o projeto implementa:
 
 - soma de vetores;
 - subtracao de vetores;
-- escala de vetores;
+- multiplicacao por escala;
 - produto escalar;
 - produto vetorial;
 - normalizacao;
-- matriz identidade;
-- multiplicacao de matrizes;
-- matriz de perspectiva;
-- matriz `lookAt`;
-- rotacoes nos eixos X, Y e Z.
+- matrizes 4x4;
+- perspectiva;
+- lookAt;
+- rotacoes.
 
-A explicacao detalhada da matematica esta no arquivo `EXPLICACAO_DA_MATEMATICA.md`.
+Essas funcoes sao usadas principalmente pela camera e pelo renderizador.
 
-## Resumo do Frame
+## Resumo Final
 
-Em cada frame, a ordem geral e:
+O funcionamento completo e:
 
-1. atualiza a camera;
-2. roda alguns passos da simulacao;
-3. compacta as celulas vivas;
-4. atualiza as matrizes e uniforms;
-5. desenha um cubo para cada celula viva;
-6. envia tudo para a GPU.
+```text
+1. HTML cria o canvas.
+2. main.js inicia WebGPU.
+3. LifeSimulation3D cria buffers das celulas.
+4. simulationShader calcula vida e morte na GPU.
+5. renderPrepShader filtra so as celulas vivas.
+6. LifeRenderer3D tem uma geometria base de cubo.
+7. renderShader repete esse cubo uma vez para cada celula viva.
+8. Camera e Controls definem como o usuario ve a cena.
+9. math.js fornece as contas de vetores e matrizes.
+```
 
-Esse e o funcionamento completo: o JavaScript organiza os recursos, mas a GPU faz a parte pesada da simulacao e do desenho.
+A parte mais importante para entender os "quadrados" e:
+
+```text
+um cubo = 6 faces quadradas
+uma face quadrada = 2 triangulos
+um cubo = 12 triangulos
+um cubo = 36 indices
+uma geometria de cubo e criada uma vez
+a GPU repete essa geometria para cada celula viva
+```
+
+Entao o projeto nao desenha quadrados soltos.
+Ele desenha cubos instanciados, posicionados em um grid 3D e coloridos por shaders.

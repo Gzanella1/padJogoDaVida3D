@@ -1,251 +1,876 @@
-# Explicacao do Codigo e Fluxo
+# Explicacao do Fluxo
 
-Este projeto renderiza uma versao 3D do Jogo da Vida de Conway usando WebGPU e JavaScript puro. A pagina principal e `intdex.html`, e a logica foi separada em modulos dentro de `src/`.
+Este arquivo explica a ordem em que as coisas acontecem.
+Ele e diferente da explicacao do codigo porque aqui o foco e o caminho:
 
-## Visao Geral
+```text
+o que acontece primeiro?
+quem chama quem?
+quando a simulacao roda?
+quando os cubos sao desenhados?
+como os dados saem do JavaScript e entram na GPU?
+```
 
-O fluxo principal e:
+## Visao Geral Do Fluxo
 
-1. `intdex.html` monta a interface visual, o canvas WebGPU e os controles.
-2. `src/main.js` inicia o WebGPU, cria a camera, os controles, a simulacao e o renderizador.
-3. `LifeSimulation3D` cria os buffers de estado das celulas e executa as regras do jogo no compute shader.
-4. `LifeRenderer3D` compacta as celulas vivas na GPU e renderiza apenas essas celulas como cubos.
-5. `Camera` e `Controls` permitem orbitar, mover e dar zoom na cena.
-6. Os shaders em `src/shaders/` fazem a simulacao, preparam a lista de celulas vivas e desenham os cubos neon.
+O projeto tem dois momentos principais:
 
-## `intdex.html`
+1. inicializacao;
+2. repeticao de frames.
 
-Este arquivo e a entrada da aplicacao.
+Na inicializacao, o codigo cria tudo que sera usado:
 
-Ele contem:
+- canvas;
+- GPU device;
+- camera;
+- controles;
+- simulacao;
+- renderizador;
+- buffers;
+- pipelines.
 
-- O `<canvas id="lifeCanvas">`, onde o WebGPU desenha a cena.
-- O painel superior com FPS, step e tamanho atual do grid.
-- A barra inferior com controles de play/pause, velocidade, rotacao automatica, reset e tamanho do grid.
-- O CSS da estetica visual: fundo azul escuro, paineis transluidos, bordas neon e interface futurista.
-- O import do modulo principal:
+Depois disso, entra no loop de frames.
+Em cada frame, a aplicacao:
+
+1. atualiza a camera;
+2. avanca a simulacao se ja passou tempo suficiente;
+3. prepara a lista de celulas vivas;
+4. desenha os cubos vivos;
+5. pede o proximo frame.
+
+## Fluxo 1: O Navegador Carrega A Pagina
+
+Tudo comeca em `intdex.html`.
+
+O navegador le o HTML e encontra:
 
 ```html
 <script type="module" src="./src/main.js"></script>
 ```
 
-## `src/main.js`
+Isso carrega `src/main.js`.
 
-Este e o orquestrador da aplicacao.
+Como `main.js` e um modulo, ele tambem importa outros arquivos:
 
-Responsabilidades principais:
+```js
+import { Camera } from "./Camera.js";
+import { Controls } from "./Controls.js";
+import { LifeRenderer3D } from "./LifeRenderer3D.js";
+import { LifeSimulation3D } from "./LifeSimulation3D.js";
+```
 
-- Verificar se `navigator.gpu` existe.
-- Pedir o adaptador WebGPU e criar o `device`.
-- Configurar o contexto WebGPU do canvas.
-- Criar:
-  - `Camera`
-  - `Controls`
-  - `LifeSimulation3D`
-  - `LifeRenderer3D`
-- Ler valores da interface, como velocidade e tamanho do grid.
-- Controlar pause/play.
-- Fazer reset aleatorio.
-- Rodar o loop principal com `requestAnimationFrame`.
+Entao, antes de rodar a aplicacao, o navegador ja sabe onde estao as classes
+principais.
 
-No loop principal acontece isto:
+## Fluxo 2: `main.js` Pega Os Elementos Da Tela
 
-1. Calcula o tempo desde o ultimo frame.
-2. Atualiza os controles da camera.
-3. Cria um `GPUCommandEncoder`.
-4. Se a simulacao estiver tocando, executa um ou mais passos da simulacao.
-5. Renderiza a cena.
-6. Envia os comandos para a GPU com `device.queue.submit`.
-7. Atualiza FPS e step na interface.
+Logo no comeco:
 
-## `src/LifeSimulation3D.js`
+```js
+const canvas = document.querySelector("#lifeCanvas");
+const unsupported = document.querySelector("#unsupported");
+```
 
-Este modulo cuida da simulacao do Jogo da Vida.
+Isso pega:
 
-Ele cria dois buffers de estado:
+- o canvas onde a cena sera desenhada;
+- o aviso de erro caso WebGPU nao funcione.
 
-- `Life state A`
-- `Life state B`
+Sem canvas, nao existe lugar para desenhar.
 
-Esses buffers trabalham em ping-pong:
+## Fluxo 3: `init()` Inicia O WebGPU
 
-- Em um passo, a GPU le do buffer A e escreve no B.
-- No passo seguinte, le do B e escreve no A.
+No final do arquivo existe:
 
-Isso evita sobrescrever uma celula antes de todas as vizinhas terem sido lidas.
+```js
+init().catch((error) => {
+  console.error(error);
+  showUnsupported(error.message || "Falha ao iniciar a aplicacao WebGPU.");
+});
+```
 
-Cada celula e guardada como um `u32`:
+Isso chama a funcao principal `init()`.
 
-- `0` significa celula morta.
-- `1..255` significa celula viva, usando o valor como idade.
+Se algo der errado, o erro aparece no console e a mensagem de erro aparece na tela.
 
-A idade permite mudar brilho e cor no shader de renderizacao.
+Dentro de `init()`, primeiro acontece:
 
-### Regras da Simulacao
+```js
+if (!navigator.gpu) {
+  showUnsupported(...);
+  return;
+}
+```
 
-O shader usa Conway classico em cada camada `Z`:
+Esse ponto responde:
 
-- Celula morta nasce com exatamente 3 vizinhos vivos.
-- Celula viva sobrevive com 2 ou 3 vizinhos vivos.
-- Nos outros casos, a celula morre.
+```text
+este navegador consegue usar WebGPU?
+```
 
-O grid continua sendo 3D porque existem varias camadas `Z`, mas cada fatia evolui com a regra classica 2D. Isso deixa o comportamento mais fiel ao Jogo da Vida original.
+Se nao conseguir, o codigo para.
 
-## `src/shaders/simulationShader.js`
+## Fluxo 4: Escolha Da GPU
 
-Este arquivo contem o compute shader da simulacao.
+Depois:
 
-Ele roda na GPU, nao no CPU.
+```js
+const adapter = await navigator.gpu.requestAdapter({
+  powerPreference: "high-performance",
+});
+```
 
-Para cada celula, o shader:
+O navegador procura uma GPU disponivel.
 
-1. Descobre sua posicao `x`, `y`, `z`.
-2. Conta os 8 vizinhos da mesma camada `z`.
-3. Aplica as regras `B3/S23`.
-4. Escreve o novo estado no buffer de saida.
+`powerPreference: "high-performance"` pede uma GPU mais forte quando possivel.
 
-O shader tambem usa bordas toroidais: quando passa da borda direita, volta para a esquerda; quando passa da borda de baixo, volta para cima.
+Depois:
 
-## `src/shaders/renderPrepShader.js`
+```js
+const device = await adapter.requestDevice();
+```
 
-Este arquivo prepara a renderizacao.
+O `device` e criado.
+Ele sera usado por quase todos os arquivos.
 
-Como celulas mortas nao devem ser renderizadas, a GPU cria uma lista apenas com as celulas vivas.
+Pense nele como:
 
-Esse processo tem dois shaders:
+```text
+device = controle remoto da GPU
+```
 
-- `indirectResetShader`: zera os argumentos do draw indireto.
-- `aliveCompactShader`: percorre o estado atual e adiciona na lista somente as celulas vivas.
+Com ele o codigo cria buffers, pipelines e envia comandos.
 
-Cada item da lista guarda:
+## Fluxo 5: O Canvas E Configurado
 
-- O indice da celula.
-- A idade da celula empacotada nos bits mais altos.
+Depois:
 
-Depois disso, o renderizador pode chamar `drawIndexedIndirect`, e a GPU desenha somente os cubos vivos.
+```js
+const context = canvas.getContext("webgpu");
+const format = navigator.gpu.getPreferredCanvasFormat();
+context.configure({
+  device,
+  format,
+  alphaMode: "opaque",
+});
+```
 
-## `src/LifeRenderer3D.js`
+Isso conecta o canvas ao WebGPU.
 
-Este modulo cuida da renderizacao 3D.
+`format` define como as cores serao guardadas na textura final.
 
-Responsabilidades:
+`alphaMode: "opaque"` diz que o canvas final nao precisa ser transparente em
+relacao ao HTML por baixo.
 
-- Criar a geometria de um cubo.
-- Criar o pipeline de renderizacao.
-- Criar textura de profundidade.
-- Criar os buffers para a lista de celulas vivas.
-- Atualizar uniforms de camera, grid, luz e tempo.
-- Rodar a compactacao das celulas vivas.
-- Renderizar os cubos com `drawIndexedIndirect`.
+## Fluxo 6: Criacao Da Camera E Dos Controles
 
-A geometria do cubo e criada uma vez. Depois, cada celula viva vira uma instancia desse cubo.
+Depois:
 
-Isso e mais eficiente do que criar uma geometria separada para cada celula.
+```js
+const camera = new Camera();
+const controls = new Controls(canvas, camera);
+```
 
-## `src/shaders/renderShader.js`
+A camera sabe:
 
-Este arquivo contem o vertex shader e o fragment shader dos cubos.
+- onde esta;
+- para onde olha;
+- qual a distancia ate o alvo;
+- qual a perspectiva.
 
-### Vertex Shader
+Os controles recebem o canvas e a camera porque precisam escutar eventos no
+canvas e modificar a camera.
 
-O vertex shader:
+Exemplo:
 
-1. Le a celula viva da lista compactada.
-2. Calcula sua coordenada `x`, `y`, `z`.
-3. Centraliza o grid no espaco 3D.
-4. Aplica escala no cubo.
-5. Aplica a matriz de rotacao do modelo.
-6. Aplica a camera com `viewProjection`.
+```text
+usuario arrasta o mouse
+  -> Controls recebe pointermove
+  -> chama camera.orbit(dx, dy)
+  -> camera muda yaw e pitch
+```
 
-### Fragment Shader
+## Fluxo 7: Criacao Da Simulacao
 
-O fragment shader cria o visual neon.
+Depois:
+
+```js
+const simulation = new LifeSimulation3D(device, readGridInputs());
+```
+
+Esse objeto cria a parte de vida e morte das celulas.
+
+Dentro do construtor:
+
+```js
+this.createPipeline();
+this.resize(dimensions);
+```
+
+Ou seja:
+
+1. cria o pipeline do shader de simulacao;
+2. cria os buffers do grid;
+3. preenche o estado inicial aleatorio.
+
+## Fluxo 8: Pipeline Da Simulacao
+
+Dentro de `createPipeline()`, o codigo cria:
+
+- layout de bind group;
+- shader module;
+- compute pipeline.
+
+O bind group layout diz:
+
+```text
+este shader precisa receber:
+binding 0: parametros
+binding 1: estado de entrada
+binding 2: estado de saida
+```
+
+O shader module transforma o texto WGSL em um modulo que a GPU entende.
+
+O compute pipeline define que a funcao `computeMain` sera executada.
+
+## Fluxo 9: Buffers Da Simulacao
+
+Dentro de `resize()`, o codigo calcula o tamanho do grid:
+
+```js
+this.total = x * y * z;
+```
+
+Depois cria:
+
+- `paramsBuffer`;
+- `stateBuffers[0]`;
+- `stateBuffers[1]`;
+- `bindGroups[0]`;
+- `bindGroups[1]`.
+
+O `paramsBuffer` guarda:
+
+```text
+grid.x
+grid.y
+grid.z
+total
+birth
+surviveMin
+surviveMax
+```
+
+Os dois `stateBuffers` guardam as celulas.
+
+Os dois `bindGroups` indicam qual buffer sera lido e qual sera escrito:
+
+```text
+bindGroups[0]: le A, escreve B
+bindGroups[1]: le B, escreve A
+```
+
+## Fluxo 10: Estado Inicial Aleatorio
+
+Ainda dentro da simulacao, o metodo `randomize()` cria um array:
+
+```js
+const state = new Uint32Array(this.total);
+```
+
+Ele percorre todas as posicoes do grid.
+Para cada celula, sorteia se ela nasce viva ou morta.
+
+Depois envia esse array para a GPU:
+
+```js
+this.device.queue.writeBuffer(this.stateBuffers[0], 0, state);
+```
+
+O segundo buffer recebe zeros.
+
+## Fluxo 11: Ajuste Da Camera Ao Grid
+
+Depois da simulacao existir:
+
+```js
+camera.fitToGrid(simulation.dimensions);
+```
+
+Isso ajusta a distancia da camera conforme o tamanho do grid.
+
+Se o grid for grande, a camera fica mais longe.
+Se for pequeno, fica mais perto.
+
+## Fluxo 12: Criacao Do Renderizador
+
+Depois:
+
+```js
+const renderer = new LifeRenderer3D(device, context, canvas, format, simulation);
+```
+
+Dentro do construtor do renderizador:
+
+```js
+this.createGeometry();
+this.createPipelines();
+this.setSimulation(simulation);
+```
+
+Traduzindo:
+
+1. crie a geometria base de um cubo;
+2. crie os pipelines usados para renderizar;
+3. conecte o renderizador com a simulacao atual.
+
+## Fluxo 13: Criacao Da Geometria Do Cubo
+
+`createGeometry()` chama `createCubeGeometry()`.
+
+Essa funcao cria:
+
+- vertices;
+- normais;
+- indices.
+
+O cubo base e criado uma vez.
+Depois a GPU repete esse mesmo cubo para cada celula viva.
+
+Esse e um dos pontos mais importantes do fluxo:
+
+```text
+nao existe um objeto cubo separado para cada celula no JavaScript
+existe uma geometria base
+a GPU desenha muitas instancias dela
+```
+
+## Fluxo 14: Pipelines Do Renderizador
+
+`createPipelines()` cria tres pipelines principais:
+
+1. pipeline de renderizacao dos cubos;
+2. pipeline para resetar o draw indireto;
+3. pipeline para compactar celulas vivas.
+
+### Pipeline De Renderizacao
+
+Esse pipeline usa `renderShader.js`.
+
+Ele define:
+
+- vertex shader: `vertexMain`;
+- fragment shader: `fragmentMain`;
+- formato dos vertices;
+- blend/transparencia;
+- desenho por triangulos;
+- teste de profundidade.
+
+O teste de profundidade e importante para que cubos mais perto da camera
+aparecam na frente dos cubos mais distantes.
+
+### Pipeline De Reset
+
+Esse pipeline usa `indirectResetShader`.
+
+Antes de cada renderizacao, ele zera a contagem de instancias vivas.
+
+### Pipeline De Compactacao
+
+Esse pipeline usa `aliveCompactShader`.
+
+Ele percorre o estado atual e cria a lista de celulas vivas.
+
+## Fluxo 15: Recursos Ligados A Simulacao
+
+`setSimulation(simulation)` conecta o renderizador aos buffers da simulacao.
+
+Ele cria:
+
+- `aliveCellsBuffer`;
+- `indirectBuffer`;
+- bind groups para compactacao;
+- bind group de renderizacao.
+
+`aliveCellsBuffer` guarda a lista final das celulas vivas.
+
+`indirectBuffer` guarda os argumentos para:
+
+```js
+pass.drawIndexedIndirect(this.indirectBuffer, 0);
+```
+
+Ou seja, a GPU decide quantas instancias vai desenhar com base no resultado da
+compactacao.
+
+## Fluxo 16: Inicio Do Loop De Frames
+
+Depois da inicializacao:
+
+```js
+requestAnimationFrame(frame);
+```
+
+O navegador chama `frame(now)` antes de desenhar o proximo quadro.
+
+Esse processo repete enquanto a pagina esta aberta.
+
+## Fluxo 17: Calculo Do Tempo
+
+Dentro do frame:
+
+```js
+const deltaTime = Math.min((now - lastTime) / 1000, 0.05);
+lastTime = now;
+```
+
+`now` vem em milissegundos.
+Dividir por `1000` transforma em segundos.
+
+O `Math.min(..., 0.05)` limita o tempo maximo considerado.
+Isso evita um salto enorme caso a aba trave por um momento.
+
+## Fluxo 18: Atualizacao Dos Controles
+
+Depois:
+
+```js
+controls.update(deltaTime);
+```
+
+Esse metodo olha quais teclas estao pressionadas.
+
+Se `W`, `A`, `S`, `D`, `Q` ou `E` estiverem ativas, ele move a camera.
+
+Eventos de mouse, como arrastar e zoom, ja chamam metodos da camera diretamente
+quando acontecem.
+
+## Fluxo 19: Criacao Do Encoder Do Frame
+
+Depois:
+
+```js
+const encoder = device.createCommandEncoder({ label: "Life frame encoder" });
+```
+
+Tudo que a GPU deve fazer neste frame sera gravado nesse encoder.
+
+Pense no encoder como uma lista de tarefas:
+
+```text
+tarefa 1: atualizar celulas
+tarefa 2: preparar celulas vivas
+tarefa 3: desenhar cubos
+```
+
+## Fluxo 20: Controle Da Velocidade Da Simulacao
+
+O codigo usa:
+
+```js
+accumulator += deltaTime;
+const interval = 1 / speed;
+```
+
+Com `speed = 8`:
+
+```text
+interval = 1 / 8 = 0.125 segundos
+```
+
+Enquanto o acumulador tiver tempo suficiente, roda mais um passo:
+
+```js
+while (accumulator >= interval && stepsThisFrame < 5) {
+  simulation.encodeStep(encoder);
+  accumulator -= interval;
+  stepsThisFrame += 1;
+}
+```
+
+O limite `stepsThisFrame < 5` evita que a simulacao tente recuperar passos
+demais em um unico frame.
+
+## Fluxo 21: O Que Acontece Em `simulation.encodeStep`
+
+Quando `encodeStep(encoder)` roda, ele nao calcula tudo imediatamente no CPU.
+Ele grava um comando para a GPU executar depois.
+
+O metodo:
+
+1. abre um compute pass;
+2. escolhe o pipeline de simulacao;
+3. escolhe o bind group atual;
+4. despacha workgroups;
+5. fecha o compute pass;
+6. troca o buffer atual.
+
+O ponto mais importante:
+
+```text
+o JavaScript nao percorre as celulas
+a GPU percorre as celulas no compute shader
+```
+
+## Fluxo 22: Renderizacao Comeca
+
+Depois dos passos da simulacao:
+
+```js
+renderer.render(encoder, camera, deltaTime, now * 0.001, autoRotate);
+```
+
+O renderizador recebe:
+
+- o mesmo encoder do frame;
+- a camera;
+- o tempo desde o ultimo frame;
+- o tempo total em segundos;
+- se deve rotacionar automaticamente.
+
+## Fluxo 23: Resize Do Canvas
+
+Dentro de `render()`:
+
+```js
+this.resize();
+```
+
+Isso verifica se o tamanho real do canvas precisa mudar.
+
+O canvas tem:
+
+- tamanho CSS na tela;
+- tamanho interno em pixels.
+
+O codigo multiplica pelo `devicePixelRatio` para ficar mais nitido em telas de
+alta densidade.
+
+Quando o tamanho muda, a textura de profundidade tambem precisa ser recriada.
+
+## Fluxo 24: Atualizacao Dos Uniforms
+
+Depois:
+
+```js
+this.updateUniforms(camera, deltaTime, elapsedSeconds, autoRotate);
+```
+
+Uniforms sao dados pequenos enviados para o shader.
+
+Neste projeto, eles incluem:
+
+- matriz `viewProjection`;
+- matriz `model`;
+- tamanho do grid;
+- espacamento;
+- direcao da luz;
+- posicao da camera;
+- tempo.
+
+Esses dados vao para o `renderUniformBuffer`.
+
+## Fluxo 25: Compactacao Das Celulas Vivas
+
+Depois:
+
+```js
+this.encodeAliveCompaction(encoder);
+```
+
+Essa etapa tem dois passes:
+
+1. reset;
+2. compactacao.
+
+### Reset
+
+O reset coloca:
+
+```text
+indexCount = 36
+instanceCount = 0
+```
+
+Isso prepara o draw indireto.
+
+### Compactacao
+
+Depois, o shader percorre todas as celulas.
+
+Se a celula estiver morta:
+
+```text
+nao faz nada
+```
+
+Se estiver viva:
+
+```text
+pega um slot livre na lista
+guarda indice + idade
+aumenta instanceCount
+```
+
+No final dessa etapa:
+
+```text
+aliveCellsBuffer = lista de celulas vivas
+indirectBuffer.instanceCount = quantidade de cubos
+```
+
+## Fluxo 26: Render Pass
+
+Agora o renderizador abre um render pass:
+
+```js
+const pass = encoder.beginRenderPass(...);
+```
+
+Esse render pass:
+
+- limpa a tela com uma cor de fundo;
+- limpa a textura de profundidade;
+- prepara o desenho dos cubos.
+
+Depois:
+
+```js
+pass.setPipeline(this.renderPipeline);
+pass.setBindGroup(0, this.renderBindGroup);
+pass.setVertexBuffer(0, this.vertexBuffer);
+pass.setIndexBuffer(this.indexBuffer, "uint16");
+```
+
+Isso diz para a GPU:
+
+- qual pipeline usar;
+- quais uniforms e lista de celulas vivas usar;
+- qual geometria de cubo usar;
+- quais indices formam os triangulos.
+
+## Fluxo 27: Draw Indireto
+
+A chamada final de desenho e:
+
+```js
+pass.drawIndexedIndirect(this.indirectBuffer, 0);
+```
+
+Ela e especial.
+
+Em vez do JavaScript dizer diretamente:
+
+```text
+desenhe 1540 cubos
+```
+
+a GPU le essa quantidade do `indirectBuffer`.
+
+Esse numero foi calculado antes pelo `aliveCompactShader`.
+
+Entao o fluxo fica:
+
+```text
+GPU compacta celulas vivas
+GPU escreve quantidade de cubos
+GPU usa essa quantidade para desenhar
+```
+
+Isso evita trazer dados de volta para o JavaScript.
+
+## Fluxo 28: Vertex Shader Para Cada Cubo
+
+Para cada cubo vivo, o vertex shader roda para os vertices da geometria.
+
+Ele recebe:
+
+```text
+qual vertice do cubo?
+qual instancia/celula viva?
+```
+
+Com isso ele calcula:
+
+```text
+posicao final do vertice na tela
+```
+
+O caminho e:
+
+```text
+indice da celula
+  -> coordenada x,y,z
+  -> centro da celula no mundo
+  -> vertice do cubo escalado
+  -> rotacao do modelo
+  -> camera
+  -> perspectiva
+  -> tela
+```
+
+## Fluxo 29: Fragment Shader Para Cada Pixel
+
+Depois que os triangulos estao posicionados, a GPU descobre quais pixels eles
+cobrem.
+
+Para cada pixel, o fragment shader calcula a cor.
 
 Ele usa:
 
-- Cor RGB/HSV saturada.
-- Variacao por posicao da celula.
-- Idade da celula para mudar brilho.
-- Luz direcional simples.
-- Rim light para bordas brilhantes.
-- Transparencia leve.
+- cor baseada na posicao;
+- idade da celula;
+- luz;
+- borda brilhante;
+- pulso de tempo.
 
-## `src/Camera.js`
+No final retorna:
 
-Este modulo cria uma camera orbital.
+```wgsl
+return vec4f(color, alpha);
+```
 
-Ela guarda:
+`color` e RGB.
+`alpha` e transparencia.
 
-- `target`: ponto que a camera olha.
-- `distance`: distancia ate o alvo.
-- `yaw`: rotacao horizontal.
-- `pitch`: rotacao vertical.
-- `fov`: campo de visao.
+## Fluxo 30: Envio Dos Comandos
 
-Ela tambem gera a matriz `viewProjection`, que combina:
+Depois que simulacao e renderizacao foram gravadas no encoder:
 
-- Matriz de perspectiva.
-- Matriz de camera `lookAt`.
+```js
+device.queue.submit([encoder.finish()]);
+```
 
-## `src/Controls.js`
+Agora sim a GPU recebe a lista de tarefas.
 
-Este modulo conecta mouse, scroll e teclado na camera.
-python3 -m http.server 8001
+Depois:
 
-Controles:
+```js
+requestAnimationFrame(frame);
+```
 
-- Arrastar com mouse: orbita a camera.
-- Scroll: zoom.
-- Shift ou botao do meio/direito: move a camera.
-- `W`, `A`, `S`, `D`: move no plano da camera.
-- `Q` e `E`: move para baixo/cima.
+O proximo frame e agendado.
 
-## `src/math.js`
+## Caminho Completo De Uma Celula
 
-Este arquivo contem funcoes matematicas usadas pela camera e pelo renderizador.
+Vamos seguir uma celula imaginaria.
 
-Ele implementa:
+### 1. Ela nasce no estado inicial
 
-- Vetores 3D.
-- Normalizacao.
-- Produto vetorial.
-- Produto escalar.
-- Matrizes 4x4.
-- Perspectiva.
-- LookAt.
-- Rotacoes nos eixos X, Y e Z.
+`randomize()` sorteia:
 
-## Fluxo de um Frame
+```text
+celula indice 300 = viva
+```
 
-Em cada frame:
+O buffer recebe:
 
-1. `main.js` calcula `deltaTime`.
-2. `Controls` atualiza a camera.
-3. Se estiver em play, `LifeSimulation3D.encodeStep()` adiciona o compute shader da simulacao no command encoder.
-4. `LifeRenderer3D.render()` atualiza uniforms.
-5. `LifeRenderer3D` reseta o draw indireto.
-6. `LifeRenderer3D` compacta as celulas vivas.
-7. O render pass limpa a tela e a profundidade.
-8. A GPU desenha os cubos vivos.
-9. O command encoder e enviado para a GPU.
-10. A interface atualiza FPS e step.
+```text
+state[300] = 1
+```
 
-## Por Que a Simulacao Fica na GPU
+### 2. A simulacao atualiza
 
-O CPU nao percorre o grid para aplicar as regras.
+No compute shader, a GPU conta os vizinhos da celula 300.
 
-O CPU apenas:
+Se ela sobreviver:
 
-- Cria buffers.
-- Envia comandos.
-- Atualiza controles.
-- Atualiza interface.
+```text
+stateOut[300] = 2
+```
 
-A GPU faz:
+Se morrer:
 
-- Contagem de vizinhos.
-- Nascimento e morte das celulas.
-- Compactacao das celulas vivas.
-- Renderizacao dos cubos.
+```text
+stateOut[300] = 0
+```
 
-Isso deixa a aplicacao mais fluida e permite aumentar o grid com menos custo no CPU.
+### 3. A compactacao olha essa celula
+
+Se `state[300] > 0`, o `aliveCompactShader` coloca ela na lista:
+
+```text
+aliveCells[algumSlot] = indice 300 + idade
+```
+
+### 4. O render shader desenha
+
+O vertex shader recebe essa instancia.
+Ele converte o indice 300 para uma coordenada `x, y, z`.
+
+Depois posiciona o cubo nesse lugar.
+
+### 5. O fragment shader colore
+
+O fragment shader usa a posicao e a idade para gerar cor e brilho.
+
+Resultado:
+
+```text
+a celula vira um cubo neon na tela
+```
+
+## Fluxo Resumido Em Forma De Diagrama
+
+```text
+intdex.html
+  carrega main.js
+
+main.js
+  verifica WebGPU
+  cria device
+  configura canvas
+  cria Camera
+  cria Controls
+  cria LifeSimulation3D
+  cria LifeRenderer3D
+  inicia requestAnimationFrame
+
+frame()
+  calcula deltaTime
+  atualiza Controls
+  cria command encoder
+
+  se passou tempo suficiente:
+    LifeSimulation3D.encodeStep()
+      simulationShader.computeMain()
+      le estado antigo
+      escreve estado novo
+      troca buffer atual
+
+  LifeRenderer3D.render()
+    resize()
+    updateUniforms()
+    renderPrepShader.resetIndirect()
+    renderPrepShader.compactAlive()
+    renderShader.vertexMain()
+    renderShader.fragmentMain()
+
+  device.queue.submit()
+  requestAnimationFrame(frame)
+```
+
+## Ideia Principal Do Fluxo
+
+O JavaScript e o organizador.
+A GPU e quem faz o trabalho pesado.
+
+O JavaScript:
+
+- cria objetos;
+- cria buffers;
+- configura pipelines;
+- grava comandos;
+- envia comandos.
+
+A GPU:
+
+- calcula a simulacao;
+- filtra celulas vivas;
+- transforma vertices;
+- calcula cores;
+- desenha os cubos.
+
+Essa separacao e o motivo do projeto conseguir lidar com milhares de celulas
+sem o JavaScript precisar desenhar uma por uma.
