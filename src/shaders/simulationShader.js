@@ -10,18 +10,20 @@ struct SimParams {
 @group(0) @binding(1) var<storage, read> stateIn: array<u32>;
 @group(0) @binding(2) var<storage, read_write> stateOut: array<u32>;
 
-fn wrappedLayerIndex(xValue: i32, yValue: i32, zValue: u32) -> u32 {
+fn wrappedGridIndex(xValue: i32, yValue: i32, zValue: i32) -> u32 {
   let gx = i32(params.grid.x);
   let gy = i32(params.grid.y);
+  let gz = i32(params.grid.z);
 
   let x = (xValue + gx) % gx;
   let y = (yValue + gy) % gy;
+  let z = (zValue + gz) % gz;
 
-  return zValue * params.grid.x * params.grid.y + u32(y * gx + x);
+  return u32(z * gx * gy + y * gx + x);
 }
 
-fn cellActive(xValue: i32, yValue: i32, zValue: u32) -> u32 {
-  return select(0u, 1u, stateIn[wrappedLayerIndex(xValue, yValue, zValue)] > 0u);
+fn cellActive(xValue: i32, yValue: i32, zValue: i32) -> u32 {
+  return select(0u, 1u, stateIn[wrappedGridIndex(xValue, yValue, zValue)] > 0u);
 }
 
 @compute @workgroup_size(${SIM_WORKGROUP_SIZE}, ${SIM_WORKGROUP_SIZE}, ${SIM_WORKGROUP_SIZE})
@@ -32,16 +34,18 @@ fn computeMain(@builtin(global_invocation_id) cell: vec3u) {
 
   let cx = i32(cell.x);
   let cy = i32(cell.y);
-  let cz = cell.z;
+  let cz = i32(cell.z);
   var activeNeighbors = 0u;
 
-  for (var dy = -1i; dy <= 1i; dy = dy + 1i) {
-    for (var dx = -1i; dx <= 1i; dx = dx + 1i) {
-      if (dx == 0i && dy == 0i) {
-        continue;
-      }
+  for (var dz = -1i; dz <= 1i; dz = dz + 1i) {
+    for (var dy = -1i; dy <= 1i; dy = dy + 1i) {
+      for (var dx = -1i; dx <= 1i; dx = dx + 1i) {
+        if (dx == 0i && dy == 0i && dz == 0i) {
+          continue;
+        }
 
-      activeNeighbors = activeNeighbors + cellActive(cx + dx, cy + dy, cz);
+        activeNeighbors = activeNeighbors + cellActive(cx + dx, cy + dy, cz + dz);
+      }
     }
   }
 

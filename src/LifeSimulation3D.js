@@ -1,9 +1,9 @@
 import { SIM_WORKGROUP_SIZE, simulationShader } from "./shaders/simulationShader.js";
 
 const DEFAULT_RULES = {
-  birth: 3,
-  surviveMin: 2,
-  surviveMax: 3,
+  birth: 6,
+  surviveMin: 5,
+  surviveMax: 7,
 };
 
 function alignDimension(value, min, max) {

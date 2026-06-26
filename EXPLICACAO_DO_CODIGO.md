@@ -8,8 +8,36 @@ A ideia nao e so dizer "esse arquivo faz tal coisa", mas explicar:
 - como ele aparece no codigo;
 - como tudo se conecta para formar os cubos na tela.
 
-O projeto e uma visualizacao 3D do Jogo da Vida. Ele usa JavaScript puro,
-WebGPU e shaders. A simulacao e o desenho ficam principalmente na GPU.
+O projeto e uma variacao tridimensional inspirada no Jogo da Vida. Ele usa
+JavaScript puro, WebGPU e shaders. A simulacao e o desenho ficam
+principalmente na GPU.
+
+Importante: esta implementacao nao e o Jogo da Vida de Conway classico
+`B3/S23`. Ela e um automato celular Life-like 3D com regra `B6/S567`.
+
+## Visao Geral Do Projeto
+
+O projeto simula um volume de celulas. Cada celula tem uma coordenada
+`(x, y, z)` e pode estar morta ou viva.
+
+Quando uma celula esta viva, o renderizador mostra um cubo naquela posicao.
+Quando esta morta, nada e desenhado naquela posicao.
+
+A simulacao e 3D de verdade porque a regra de evolucao considera vizinhos nas
+tres dimensoes:
+
+```text
+x = esquerda / direita
+y = baixo / cima
+z = camada anterior / camada seguinte
+```
+
+No Jogo da Vida 2D, uma celula olha ate 8 vizinhos em um quadrado `3x3`.
+Nesta versao 3D, uma celula olha ate 26 vizinhos em um cubo `3x3x3`.
+
+Isso significa que o projeto deve ser explicado como um volume 3D acoplado.
+Uma celula pode nascer ou morrer por causa de vizinhos na mesma camada, na
+camada acima ou na camada abaixo.
 
 ## Mapa Mental do Projeto
 
@@ -55,9 +83,10 @@ WebGPU e uma API do navegador que permite usar a GPU diretamente.
 GPU significa "placa de video" ou "processador grafico".
 Ela e muito boa em fazer muitas contas parecidas ao mesmo tempo.
 
-Neste projeto, a GPU faz duas coisas importantes:
+Neste projeto, a GPU faz tres coisas importantes:
 
-- calcula a proxima geracao do Jogo da Vida;
+- calcula a proxima geracao do automato celular;
+- compacta a lista de celulas vivas para o desenho;
 - desenha muitos cubos na tela.
 
 O JavaScript nao desenha cubo por cubo. Ele prepara os dados e manda comandos.
@@ -254,16 +283,16 @@ Ele organiza quem faz cada trabalho.
 No topo:
 
 ```js
-const DEFAULT_SIMULATION_SPEED = 8;
-const DEFAULT_AUTO_ROTATE = true;
-const DEFAULT_GRID_DIMENSIONS = { x: 24, y: 24, z: 16 };
+const DEFAULT_SIMULATION_SPEED = 1;
+const DEFAULT_AUTO_ROTATE = false;
+const DEFAULT_GRID_DIMENSIONS = { x: 32, y: 32, z: 32 };
 ```
 
 Isso quer dizer:
 
-- a simulacao tenta rodar 8 passos por segundo;
-- a cena gira automaticamente;
-- o grid tem largura 24, altura 24 e 16 camadas.
+- a simulacao tenta rodar 1 passo por segundo;
+- a cena nao gira automaticamente;
+- o grid tem largura 32, altura 32 e profundidade 32.
 
 ### Verificacao do WebGPU
 
@@ -396,6 +425,17 @@ passo 3: le A e escreve B
 
 Esse padrao se chama ping-pong buffer.
 
+Esse nome vem da alternancia:
+
+```text
+A -> B
+B -> A
+A -> B
+```
+
+Assim, a GPU sempre le um estado completo e escreve o proximo estado em outro
+lugar. Isso evita misturar dados antigos e novos na mesma geracao.
+
 ### Criacao do Grid
 
 No metodo `resize(dimensions)`, o codigo ajusta o tamanho:
@@ -414,10 +454,10 @@ Depois calcula:
 this.total = x * y * z;
 ```
 
-Com `24 x 24 x 16`, o total e:
+Com `32 x 32 x 32`, o total e:
 
 ```text
-24 * 24 * 16 = 9216 celulas
+32 * 32 * 32 = 32768 celulas
 ```
 
 ### Estado Inicial Aleatorio
@@ -456,6 +496,10 @@ Traduzindo:
 - use o bind group que le o estado atual e escreve no outro buffer;
 - execute varios grupos de trabalho na GPU.
 
+`dispatchWorkgroups` nao executa um loop JavaScript celula por celula. Ele
+manda para a GPU uma grade de grupos de trabalho. Dentro desses grupos, as
+invocacoes do compute shader calculam celulas diferentes em paralelo.
+
 Depois:
 
 ```js
@@ -471,7 +515,7 @@ se era 1, vira 0
 
 ## Arquivo `src/shaders/simulationShader.js`
 
-Este shader calcula a regra do Jogo da Vida.
+Este shader calcula a regra do automato celular Life-like 3D.
 
 Ele roda uma vez para cada celula.
 
@@ -495,7 +539,8 @@ Isso quer dizer que cada grupo de trabalho tem:
 4 * 4 * 4 = 64 invocacoes
 ```
 
-Cada invocacao calcula uma celula.
+Cada invocacao calcula uma celula. Como existem muitas invocacoes rodando na
+GPU, muitas celulas podem ser processadas em paralelo.
 
 ### Entrada e Saida
 
@@ -518,17 +563,56 @@ Significado:
 O shader percorre:
 
 ```wgsl
-for (var dy = -1i; dy <= 1i; dy = dy + 1i) {
-  for (var dx = -1i; dx <= 1i; dx = dx + 1i) {
+for (var dz = -1i; dz <= 1i; dz = dz + 1i) {
+  for (var dy = -1i; dy <= 1i; dy = dy + 1i) {
+    for (var dx = -1i; dx <= 1i; dx = dx + 1i) {
 ```
 
 Ele olha os vizinhos em volta da celula.
-Quando `dx == 0` e `dy == 0`, ele pula, porque isso seria a propria celula.
+Quando `dx == 0`, `dy == 0` e `dz == 0`, ele pula, porque isso seria a propria celula.
 
-Importante: ele conta vizinhos na mesma camada `z`.
-Ou seja, cada camada do grid funciona como um Jogo da Vida 2D separado.
+Essa vizinhanca se chama vizinhanca Moore 3D.
 
-### Regras B3/S23
+O cubo `3x3x3` tem:
+
+```text
+3 * 3 * 3 = 27 posicoes
+```
+
+Mas uma dessas posicoes e a propria celula. Por isso:
+
+```text
+27 - 1 = 26 vizinhas
+```
+
+Importante: ele conta vizinhos tambem nas camadas `z` anterior e seguinte.
+Ou seja, cada celula consulta ate 26 vizinhos dentro do cubo `3x3x3`.
+
+A chamada que faz isso e:
+
+```wgsl
+activeNeighbors = activeNeighbors + cellActive(cx + dx, cy + dy, cz + dz);
+```
+
+O `cz + dz` mostra que a profundidade tambem entra na contagem. Como a chamada
+usa `cz + dz`, a simulacao evolui como um volume 3D real.
+
+### Bordas Periodicas
+
+A funcao `wrappedGridIndex` aplica modulo nas tres dimensoes:
+
+```wgsl
+let x = (xValue + gx) % gx;
+let y = (yValue + gy) % gy;
+let z = (zValue + gz) % gz;
+```
+
+Isso cria bordas periodicas em `x`, `y` e `z`.
+
+Exemplo: se uma celula na borda tenta consultar `x = -1`, o codigo volta para o
+ultimo `x` do grid. A mesma ideia vale para `y` e `z`.
+
+### Regras B6/S567
 
 O codigo usa:
 
@@ -540,16 +624,20 @@ let survives = activeNeighbors >= params.rules.y && activeNeighbors <= params.ru
 No JavaScript, as regras sao:
 
 ```js
-birth: 3,
-surviveMin: 2,
-surviveMax: 3,
+birth: 6,
+surviveMin: 5,
+surviveMax: 7,
 ```
 
 Entao:
 
-- celula morta nasce com exatamente 3 vizinhos;
-- celula viva sobrevive com 2 ou 3 vizinhos;
+- `B6`: celula morta nasce com exatamente 6 vizinhos ativos;
+- `S567`: celula viva sobrevive com 5, 6 ou 7 vizinhos ativos;
 - caso contrario morre.
+
+Essa regra e Life-like porque segue a ideia de nascimento e sobrevivencia do
+Jogo da Vida, mas nao e a regra classica `B3/S23`. Ela foi escolhida para uma
+vizinhanca 3D com ate 26 vizinhos.
 
 ## Arquivo `src/LifeRenderer3D.js`
 
@@ -950,6 +1038,40 @@ Entao o projeto implementa:
 
 Essas funcoes sao usadas principalmente pela camera e pelo renderizador.
 
+## Por Que Isso E Programacao De Alto Desempenho
+
+O ponto de alto desempenho nao e simplesmente "usar threads".
+O ponto central e usar a GPU como processador paralelo.
+
+Na simulacao:
+
+```text
+uma invocacao do compute shader = calculo de uma celula
+muitas invocacoes = muitas celulas calculadas ao mesmo tempo
+workgroups = grupos dessas invocacoes
+dispatchWorkgroups = comando que despacha o trabalho para a GPU
+```
+
+O JavaScript prepara os buffers, cria os bind groups e grava comandos no
+encoder. A GPU executa a parte repetitiva e massiva:
+
+- contar vizinhos em 3D;
+- aplicar a regra `B6/S567`;
+- escrever o novo estado no buffer de saida;
+- compactar as celulas vivas para desenhar somente o que aparece.
+
+Essa arquitetura combina:
+
+- compute shader para calculo geral;
+- storage buffers para muitos dados;
+- bind groups para conectar buffers aos shaders;
+- ping-pong buffers para separar estado antigo e estado novo;
+- renderizacao instanciada para repetir a geometria do cubo.
+
+Por isso o projeto pode ser defendido como uma aplicacao de Programacao de Alto
+Desempenho: a carga de trabalho principal e paralelizavel e foi movida para a
+GPU.
+
 ## Resumo Final
 
 O funcionamento completo e:
@@ -958,7 +1080,7 @@ O funcionamento completo e:
 1. HTML cria o canvas.
 2. main.js inicia WebGPU.
 3. LifeSimulation3D cria buffers das celulas.
-4. simulationShader calcula vida e morte na GPU.
+4. simulationShader conta vizinhos em 3D e calcula vida e morte na GPU.
 5. renderPrepShader filtra so as celulas vivas.
 6. LifeRenderer3D tem uma geometria base de cubo.
 7. renderShader repete esse cubo uma vez para cada celula viva.
@@ -979,3 +1101,11 @@ a GPU repete essa geometria para cada celula viva
 
 Entao o projeto nao desenha quadrados soltos.
 Ele desenha cubos instanciados, posicionados em um grid 3D e coloridos por shaders.
+
+Para o artigo, a formulacao mais correta e:
+
+```text
+O projeto implementa uma variacao tridimensional Life-like inspirada no Jogo da
+Vida de Conway. A simulacao usa vizinhanca Moore 3D com 26 vizinhas, regra
+B6/S567 e processamento paralelo na GPU por meio de WebGPU compute shaders.
+```

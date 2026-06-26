@@ -38,6 +38,10 @@ Em cada frame, a aplicacao:
 4. desenha os cubos vivos;
 5. pede o proximo frame.
 
+A simulacao e 3D de verdade: o passo de atualizacao considera vizinhos em
+`x`, `y` e `z`. A contagem de vizinhos e a regra de nascimento/sobrevivencia
+acontecem no compute shader, nao no `main.js`.
+
 ## Fluxo 1: O Navegador Carrega A Pagina
 
 Tudo comeca em `intdex.html`.
@@ -234,6 +238,9 @@ O shader module transforma o texto WGSL em um modulo que a GPU entende.
 
 O compute pipeline define que a funcao `computeMain` sera executada.
 
+Essa funcao e executada em paralelo pela GPU. Cada invocacao recebe uma
+coordenada de celula e calcula o proximo estado dessa celula.
+
 ## Fluxo 9: Buffers Da Simulacao
 
 Dentro de `resize()`, o codigo calcula o tamanho do grid:
@@ -270,6 +277,10 @@ Os dois `bindGroups` indicam qual buffer sera lido e qual sera escrito:
 bindGroups[0]: le A, escreve B
 bindGroups[1]: le B, escreve A
 ```
+
+Essa alternancia e a tecnica ping-pong. Ela separa a geracao antiga da geracao
+nova, evitando que uma celula leia valores que ja foram atualizados no mesmo
+passo.
 
 ## Fluxo 10: Estado Inicial Aleatorio
 
@@ -473,10 +484,10 @@ accumulator += deltaTime;
 const interval = 1 / speed;
 ```
 
-Com `speed = 8`:
+Com `speed = 1` na versao atual:
 
 ```text
-interval = 1 / 8 = 0.125 segundos
+interval = 1 / 1 = 1 segundo
 ```
 
 Enquanto o acumulador tiver tempo suficiente, roda mais um passo:
@@ -512,6 +523,17 @@ O ponto mais importante:
 o JavaScript nao percorre as celulas
 a GPU percorre as celulas no compute shader
 ```
+
+Dentro do compute shader, cada celula consulta a vizinhanca Moore 3D:
+
+```text
+dx = -1 ate 1
+dy = -1 ate 1
+dz = -1 ate 1
+```
+
+O caso `dx = 0`, `dy = 0`, `dz = 0` e ignorado porque e a propria celula.
+Assim, cada celula pode considerar ate 26 vizinhas no cubo `3x3x3`.
 
 ## Fluxo 22: Renderizacao Comeca
 
@@ -772,7 +794,10 @@ state[300] = 1
 
 ### 2. A simulacao atualiza
 
-No compute shader, a GPU conta os vizinhos da celula 300.
+No compute shader, a GPU conta os vizinhos 3D da celula 300.
+
+Essa contagem considera vizinhos na mesma camada, na camada anterior e na
+camada seguinte.
 
 Se ela sobreviver:
 
@@ -835,6 +860,7 @@ frame()
   se passou tempo suficiente:
     LifeSimulation3D.encodeStep()
       simulationShader.computeMain()
+      conta ate 26 vizinhos em 3D
       le estado antigo
       escreve estado novo
       troca buffer atual

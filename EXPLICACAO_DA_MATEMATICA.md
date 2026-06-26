@@ -13,7 +13,7 @@ O objetivo e responder:
 O projeto mistura tres tipos de matematica:
 
 1. matematica de grid;
-2. matematica do Jogo da Vida;
+2. matematica de automatos celulares Life-like;
 3. matematica 3D.
 
 Cada uma resolve um problema diferente.
@@ -22,7 +22,7 @@ Cada uma resolve um problema diferente.
 grid
   onde cada celula esta?
 
-Jogo da Vida
+Life-like 3D
   uma celula nasce, vive ou morre?
 
 3D
@@ -33,26 +33,29 @@ Jogo da Vida
 
 O mundo da simulacao e uma caixa dividida em celulas.
 
+Esta caixa nao e apenas visual. A regra de evolucao tambem usa as tres
+dimensoes. Cada celula pode ser influenciada por vizinhos em `x`, `y` e `z`.
+
 O tamanho e:
 
 ```text
 x = largura
 y = altura
-z = quantidade de camadas
+z = profundidade do volume
 ```
 
 No codigo atual:
 
 ```js
-const DEFAULT_GRID_DIMENSIONS = { x: 24, y: 24, z: 16 };
+const DEFAULT_GRID_DIMENSIONS = { x: 32, y: 32, z: 32 };
 ```
 
 Entao:
 
 ```text
-x = 24
-y = 24
-z = 16
+x = 32
+y = 32
+z = 32
 ```
 
 O total de celulas e:
@@ -64,11 +67,11 @@ total = x * y * z
 Com os valores atuais:
 
 ```text
-total = 24 * 24 * 16
-total = 9216
+total = 32 * 32 * 32
+total = 32768
 ```
 
-Ou seja, existem 9216 posicoes possiveis.
+Ou seja, existem 32768 posicoes possiveis.
 
 ## 3. Coordenada 3D
 
@@ -106,12 +109,12 @@ yi: 0 ate y - 1
 zi: 0 ate z - 1
 ```
 
-Para `24 x 24 x 16`:
+Para `32 x 32 x 32`:
 
 ```text
-xi: 0 ate 23
-yi: 0 ate 23
-zi: 0 ate 15
+xi: 0 ate 31
+yi: 0 ate 31
+zi: 0 ate 31
 ```
 
 ## 4. Por Que O Grid 3D Vira Um Array 1D
@@ -178,8 +181,8 @@ Depois somamos `xi`, que e a coluna.
 Com:
 
 ```text
-largura = 24
-altura = 24
+largura = 32
+altura = 32
 xi = 5
 yi = 10
 zi = 2
@@ -188,13 +191,13 @@ zi = 2
 Aplicando:
 
 ```text
-index = 2 * 24 * 24 + 10 * 24 + 5
-index = 2 * 576 + 240 + 5
-index = 1152 + 240 + 5
-index = 1397
+index = 2 * 32 * 32 + 10 * 32 + 5
+index = 2 * 1024 + 320 + 5
+index = 2048 + 320 + 5
+index = 2373
 ```
 
-Entao a celula `(5, 10, 2)` fica na posicao `1397` do array.
+Entao a celula `(5, 10, 2)` fica na posicao `2373` do array.
 
 ## 6. Convertendo Indice Para Coordenada
 
@@ -216,14 +219,14 @@ y = floor(rest / largura)
 x = rest - y * largura
 ```
 
-### Exemplo Com Index 1397
+### Exemplo Com Index 2373
 
 ```text
-plane = 24 * 24 = 576
-z = floor(1397 / 576) = 2
-rest = 1397 - 2 * 576 = 245
-y = floor(245 / 24) = 10
-x = 245 - 10 * 24 = 5
+plane = 32 * 32 = 1024
+z = floor(2373 / 1024) = 2
+rest = 2373 - 2 * 1024 = 325
+y = floor(325 / 32) = 10
+x = 325 - 10 * 32 = 5
 ```
 
 Resultado:
@@ -263,68 +266,91 @@ let alive = age > 0u;
 
 Se `age > 0`, a celula esta viva.
 
-## 8. Vizinhos No Jogo Da Vida
+## 8. Diferenca Entre 2D E 3D
 
-Cada celula olha para as 8 posicoes ao redor dela.
+No Jogo da Vida 2D, cada celula olha para um quadrado `3x3` ao redor dela.
+Esse quadrado tem 9 posicoes:
+
+```text
+8 vizinhas + 1 centro
+```
+
+O centro e a propria celula, entao o maximo e 8 vizinhas.
+
+Nesta simulacao, a ideia e estendida para 3D. Cada celula olha para um cubo
+`3x3x3` ao redor dela.
+
+```text
+26 vizinhas + 1 centro
+```
+
+O centro continua sendo a propria celula, mas agora existem posicoes acima e
+abaixo no eixo `z`.
+
+## 9. Vizinhos No Automato 3D
+
+Cada celula olha para as 26 posicoes ao redor dela no volume.
 
 Imagine a celula no centro:
 
 ```text
-(-1,-1)  (0,-1)  (1,-1)
-(-1, 0)  centro  (1, 0)
-(-1, 1)  (0, 1)  (1, 1)
+camada z - 1:  9 posicoes
+camada z:      8 posicoes, porque o centro nao conta
+camada z + 1:  9 posicoes
 ```
 
-Sao 9 posicoes no quadrado, mas o centro nao conta.
-Entao sobram 8 vizinhos.
+Sao 27 posicoes no cubo `3x3x3`, mas o centro nao conta.
+Entao sobram 26 vizinhos.
 
 No shader:
 
 ```wgsl
-for (var dy = -1i; dy <= 1i; dy = dy + 1i) {
-  for (var dx = -1i; dx <= 1i; dx = dx + 1i) {
-    if (dx == 0i && dy == 0i) {
-      continue;
+for (var dz = -1i; dz <= 1i; dz = dz + 1i) {
+  for (var dy = -1i; dy <= 1i; dy = dy + 1i) {
+    for (var dx = -1i; dx <= 1i; dx = dx + 1i) {
+      if (dx == 0i && dy == 0i && dz == 0i) {
+        continue;
+      }
+
+      activeNeighbors = activeNeighbors + cellActive(cx + dx, cy + dy, cz + dz);
     }
+  }
+}
 ```
 
 `continue` pula a propria celula.
 
-## 9. Por Que So Conta Na Mesma Camada Z
+## 10. Vizinhos Em 3D
 
-O projeto tem varias camadas `z`, mas a regra conta vizinhos usando o mesmo `z`.
+O projeto usa a coordenada `z` na contagem de vizinhos.
 
 No shader:
 
 ```wgsl
-activeNeighbors = activeNeighbors + cellActive(cx + dx, cy + dy, cz);
+activeNeighbors = activeNeighbors + cellActive(cx + dx, cy + dy, cz + dz);
 ```
 
-Repare que `cz` nao muda.
+Repare que `cz` tambem muda por causa de `dz`.
 
 Isso significa:
 
 ```text
-a camada 0 evolui como um tabuleiro 2D
-a camada 1 evolui como outro tabuleiro 2D
-a camada 2 evolui como outro tabuleiro 2D
-...
+uma celula pode nascer ou morrer por causa de vizinhos acima
+uma celula pode nascer ou morrer por causa de vizinhos abaixo
+a simulacao inteira evolui como um volume 3D
 ```
 
-Visualmente fica 3D porque as camadas sao empilhadas.
-Matematicamente, cada camada segue o Conway 2D classico.
-
-## 10. Bordas Toroidais
+## 11. Bordas Toroidais
 
 Quando uma celula esta na borda, ela ainda precisa ter vizinhos.
 
 O projeto usa bordas que dao a volta.
 
-Exemplo em uma linha com largura 24:
+Exemplo em uma linha com largura 32:
 
 ```text
-se x = -1, vira 23
-se x = 24, vira 0
+se x = -1, vira 31
+se x = 32, vira 0
 ```
 
 Isso parece um mapa que fecha em si mesmo.
@@ -335,51 +361,56 @@ No shader:
 ```wgsl
 let x = (xValue + gx) % gx;
 let y = (yValue + gy) % gy;
+let z = (zValue + gz) % gz;
 ```
 
 O operador `%` pega o resto da divisao.
 
 ### Exemplo
 
-Se `gx = 24` e `xValue = -1`:
+Se `gx = 32` e `xValue = -1`:
 
 ```text
-x = (-1 + 24) % 24
-x = 23 % 24
-x = 23
+x = (-1 + 32) % 32
+x = 31 % 32
+x = 31
 ```
 
-Se `xValue = 24`:
+Se `xValue = 32`:
 
 ```text
-x = (24 + 24) % 24
-x = 48 % 24
+x = (32 + 32) % 32
+x = 64 % 32
 x = 0
 ```
 
-## 11. Regras B3/S23
+## 12. Regras B6/S567
 
-O Jogo da Vida classico usa a regra chamada `B3/S23`.
+A simulacao 3D usa a regra Life-like `B6/S567`.
+
+Ela nao e a regra classica `B3/S23` do Jogo da Vida de Conway 2D. A regra
+`B6/S567` e uma regra Life-like adaptada ao caso 3D, onde uma celula pode ter
+ate 26 vizinhos.
 
 Ela significa:
 
 ```text
-B3
+B6
   Birth
-  uma celula morta nasce com exatamente 3 vizinhos vivos
+  uma celula morta nasce com exatamente 6 vizinhos ativos
 
-S23
+S567
   Survival
-  uma celula viva sobrevive com 2 ou 3 vizinhos vivos
+  uma celula viva sobrevive com 5, 6 ou 7 vizinhos ativos
 ```
 
 No JavaScript:
 
 ```js
 const DEFAULT_RULES = {
-  birth: 3,
-  surviveMin: 2,
-  surviveMax: 3,
+  birth: 6,
+  surviveMin: 5,
+  surviveMax: 7,
 };
 ```
 
@@ -390,7 +421,7 @@ let born = activeNeighbors == params.rules.x;
 let survives = activeNeighbors >= params.rules.y && activeNeighbors <= params.rules.z;
 ```
 
-## 12. Formula Da Atualizacao
+## 13. Formula Da Atualizacao
 
 Se a celula esta viva:
 
@@ -431,7 +462,7 @@ se nasce:
   novo estado = 1
 ```
 
-## 13. Por Que A Idade Vai Ate 255
+## 14. Por Que A Idade Vai Ate 255
 
 Na compactacao, idade e indice sao colocados no mesmo numero:
 
@@ -456,7 +487,7 @@ O projeto divide assim:
 
 Por isso a idade fica limitada em 255.
 
-## 14. Empacotamento De Bits
+## 15. Empacotamento De Bits
 
 Vamos separar a ideia:
 
@@ -487,7 +518,7 @@ let age = f32(packedCell >> 24u) / 255.0;
 
 Depois divide por 255 para transformar idade em valor entre 0 e 1.
 
-## 15. Do Grid Para O Mundo 3D
+## 16. Do Grid Para O Mundo 3D
 
 Depois que sabemos a coordenada da celula, precisamos transformar isso em
 posicao 3D.
@@ -500,14 +531,14 @@ let centered = (vec3f(coord) - (dims - vec3f(1.0)) * 0.5) * spacing;
 
 Essa linha centraliza o grid.
 
-## 16. Por Que Centralizar
+## 17. Por Que Centralizar
 
 Se usasse a coordenada diretamente, o grid iria de:
 
 ```text
-x = 0 ate 23
-y = 0 ate 23
-z = 0 ate 15
+x = 0 ate 31
+y = 0 ate 31
+z = 0 ate 31
 ```
 
 Tudo ficaria no lado positivo do mundo.
@@ -522,7 +553,7 @@ z negativo ... 0 ... z positivo
 
 Isso facilita rotacao e camera.
 
-## 17. Formula Da Centralizacao
+## 18. Formula Da Centralizacao
 
 Em uma dimensao:
 
@@ -530,17 +561,17 @@ Em uma dimensao:
 centralizado = (coordenada - (tamanho - 1) * 0.5) * spacing
 ```
 
-Para `x = 24`:
+Para `x = 32`:
 
 ```text
-meio = (24 - 1) * 0.5
-meio = 11.5
+meio = (32 - 1) * 0.5
+meio = 15.5
 ```
 
 Entao:
 
 ```text
-xCentralizado = (x - 11.5) * spacing
+xCentralizado = (x - 15.5) * spacing
 ```
 
 Se `x = 0`:
@@ -557,7 +588,7 @@ Se `x = 23`:
 
 O grid fica equilibrado em volta do zero.
 
-## 18. Espacamento Entre Cubos
+## 19. Espacamento Entre Cubos
 
 No renderizador:
 
@@ -572,7 +603,7 @@ Ele define a distancia entre os centros das celulas.
 Se duas celulas vizinhas estao lado a lado, seus centros ficam separados por
 `1.08` unidades no mundo 3D.
 
-## 19. Tamanho Do Cubo
+## 20. Tamanho Do Cubo
 
 No shader:
 
@@ -601,7 +632,7 @@ lado = 0.9072
 Como os centros ficam a `1.08` de distancia e o cubo tem lado `0.9072`, sobra
 um pequeno espaco entre cubos.
 
-## 20. Posicao Final Do Vertice Do Cubo
+## 21. Posicao Final Do Vertice Do Cubo
 
 A linha:
 
@@ -638,7 +669,7 @@ posicao = 10.4536
 
 Assim o cubo fica ao redor do centro da celula.
 
-## 21. Quadrados, Triangulos E Cubos
+## 22. Quadrados, Triangulos E Cubos
 
 A GPU desenha triangulos.
 Mesmo quando queremos um quadrado, precisamos montar esse quadrado com dois
@@ -677,7 +708,7 @@ Logo:
 
 Por isso o draw indireto usa `indexCount = 36`.
 
-## 22. Vetores 3D
+## 23. Vetores 3D
 
 Um vetor 3D tem tres componentes:
 
@@ -695,7 +726,7 @@ Ele pode representar:
 
 No projeto, vetores aparecem em camera, luz, normais e posicoes.
 
-## 23. Soma De Vetores
+## 24. Soma De Vetores
 
 No arquivo `math.js`:
 
@@ -717,7 +748,7 @@ a + b = [10, 5, 0]
 
 Na camera, isso ajuda a mover o alvo.
 
-## 24. Subtracao De Vetores
+## 25. Subtracao De Vetores
 
 ```js
 export function sub3(a, b) {
@@ -738,7 +769,7 @@ target - eye = [0, 0, -10]
 
 Isso aponta da camera para o alvo.
 
-## 25. Escala De Vetor
+## 26. Escala De Vetor
 
 ```js
 export function scale3(v, amount) {
@@ -756,7 +787,7 @@ amount = 5
 resultado = [5, 0, 0]
 ```
 
-## 26. Comprimento De Vetor
+## 27. Comprimento De Vetor
 
 O comprimento de um vetor e:
 
@@ -779,7 +810,7 @@ comprimento = sqrt(9 + 16)
 comprimento = 5
 ```
 
-## 27. Normalizacao
+## 28. Normalizacao
 
 Normalizar e transformar um vetor em comprimento 1.
 
@@ -804,7 +835,7 @@ Serve para:
 - normais;
 - produto escalar correto.
 
-## 28. Produto Escalar
+## 29. Produto Escalar
 
 No codigo:
 
@@ -833,7 +864,7 @@ let diffuse = max(dot(n, light), 0.0);
 Se a face aponta para a luz, fica mais clara.
 Se aponta para longe, fica escura.
 
-## 29. Produto Vetorial
+## 30. Produto Vetorial
 
 No codigo:
 
@@ -861,7 +892,7 @@ Exemplo conceitual:
 frente x cima = direita
 ```
 
-## 30. Matriz 4x4
+## 31. Matriz 4x4
 
 Uma matriz 4x4 e uma tabela com 16 numeros.
 
@@ -877,7 +908,7 @@ Com matriz, conseguimos fazer:
 
 No projeto, as matrizes sao `Float32Array(16)`.
 
-## 31. Por Que Usar 4x4 Em 3D
+## 32. Por Que Usar 4x4 Em 3D
 
 Um ponto 3D tem:
 
@@ -901,7 +932,7 @@ vec4f(localPosition, 1.0)
 
 O `1.0` e o `w`.
 
-## 32. Matriz Identidade
+## 33. Matriz Identidade
 
 A matriz identidade nao altera nada.
 
@@ -918,7 +949,7 @@ Ela aparece em `mat4Identity()`.
 
 Serve como ponto de partida para outras matrizes.
 
-## 33. Multiplicacao De Matrizes
+## 34. Multiplicacao De Matrizes
 
 Quando multiplicamos matrizes, combinamos transformacoes.
 
@@ -951,7 +982,7 @@ posicao local
   -> posicao na tela
 ```
 
-## 34. Rotacao Com Seno E Cosseno
+## 35. Rotacao Com Seno E Cosseno
 
 Rotacao usa seno e cosseno porque eles descrevem movimento circular.
 
@@ -991,7 +1022,7 @@ const model = mat4RotationXYZ(this.sceneRotation[0], this.sceneRotation[1], this
 
 Essa matriz gira a cena inteira.
 
-## 35. Camera Orbital
+## 36. Camera Orbital
 
 A camera gira em volta de um alvo.
 
@@ -1020,7 +1051,7 @@ return [
 
 Essa formula coloca a camera em uma esfera ao redor do alvo.
 
-## 36. LookAt
+## 37. LookAt
 
 `lookAt` cria a matriz de visao.
 
@@ -1054,7 +1085,7 @@ out[14] = -dot3(z, eye);
 
 Essas linhas colocam a posicao da camera dentro da matriz.
 
-## 37. Perspectiva
+## 38. Perspectiva
 
 Perspectiva faz objetos longe parecerem menores.
 
@@ -1081,7 +1112,7 @@ far
 `near` e a distancia minima visivel.
 `far` e a distancia maxima visivel.
 
-## 38. Luz Direcional
+## 39. Luz Direcional
 
 No renderizador, a luz e enviada assim:
 
@@ -1103,7 +1134,7 @@ let diffuse = max(dot(n, light), 0.0);
 Se a normal aponta para a luz, o produto escalar e maior.
 Se aponta para longe, fica menor.
 
-## 39. Brilho De Borda
+## 40. Brilho De Borda
 
 O brilho de borda usa:
 
@@ -1118,7 +1149,7 @@ Ideia:
 
 Isso ajuda a dar aparencia neon.
 
-## 40. Cor HSV
+## 41. Cor HSV
 
 O shader usa uma funcao `hsvToRgb`.
 
@@ -1139,7 +1170,7 @@ let hue = fract(seed.x * 0.56 + seed.y * 0.31 + seed.z * 0.73 + input.age * 0.9)
 
 `fract` pega so a parte decimal, mantendo o valor entre 0 e 1.
 
-## 41. Pulso Com Seno
+## 42. Pulso Com Seno
 
 O brilho pulsa com:
 
@@ -1163,7 +1194,7 @@ varia entre:
 
 Isso cria uma oscilacao suave.
 
-## 42. Transparencia
+## 43. Transparencia
 
 O alpha e:
 
@@ -1179,7 +1210,7 @@ Ele depende de:
 
 Depois o pipeline mistura a cor usando blend.
 
-## 43. Tempo Da Simulacao
+## 44. Tempo Da Simulacao
 
 No `main.js`, a simulacao nao roda exatamente uma vez por frame.
 Ela roda de acordo com tempo acumulado.
@@ -1189,10 +1220,10 @@ accumulator += deltaTime;
 const interval = 1 / speed;
 ```
 
-Com `speed = 8`:
+Com `speed = 1`:
 
 ```text
-interval = 0.125 segundos
+interval = 1 segundo
 ```
 
 Se o acumulador passa desse valor, roda um passo.
@@ -1206,7 +1237,7 @@ velocidade da simulacao
 
 Assim a simulacao nao fica muito rapida so porque o monitor tem FPS maior.
 
-## 44. Resumo Das Formulas Mais Importantes
+## 45. Resumo Das Formulas Mais Importantes
 
 ### Total De Celulas
 
@@ -1233,8 +1264,15 @@ x = rest - y * largura
 ### Regra De Vida
 
 ```text
-morta nasce se vizinhos == 3
-viva sobrevive se vizinhos == 2 ou vizinhos == 3
+morta nasce se vizinhos == 6
+viva sobrevive se vizinhos == 5, 6 ou 7
+```
+
+### Vizinhança Moore 3D
+
+```text
+3 * 3 * 3 = 27 posicoes
+27 - 1 centro = 26 vizinhas
 ```
 
 ### Centralizacao
@@ -1262,8 +1300,9 @@ localPosition = centered + inputPosition * cubeScale
 posicaoLocal -> model -> mundo -> viewProjection -> tela
 ```
 
-## 45. Resumo Em Uma Frase
+## 46. Resumo Em Uma Frase
 
 A matematica do projeto pega uma celula em um array, descobre sua posicao no
-grid, aplica regras de vida e morte, transforma celulas vivas em cubos 3D,
-projeta esses cubos na tela e calcula cor, luz e brilho para cada pixel.
+grid, conta ate 26 vizinhas em 3D, aplica a regra Life-like `B6/S567`,
+transforma celulas vivas em cubos 3D, projeta esses cubos na tela e calcula
+cor, luz e brilho para cada pixel.

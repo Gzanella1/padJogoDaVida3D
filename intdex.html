@@ -263,36 +263,36 @@
   </head>
   <body>
     <main class="app">
-      <canvas id="lifeCanvas" aria-label="Jogo da Vida 3D em WebGPU" tabindex="0"></canvas>
+      <canvas id="lifeCanvas" aria-label="Automato celular Life-like 3D em WebGPU" tabindex="0"></canvas>
 
       <!--
       <section class="topbar">
         <div class="brand">
           <strong>WebGPU Life 3D</strong>
-          <span>Conway Cybergrid</span>
+          <span>Moore 3D Grid</span>
         </div>
         <button class="primary" id="playPause" type="button">Pausar</button>
         <label class="control range">
-          <span>Velocidade <b id="speedReadout">8</b></span>
-          <input id="speed" type="range" min="1" max="30" value="8">
+          <span>Velocidade <b id="speedReadout">1</b></span>
+          <input id="speed" type="range" min="1" max="30" value="1">
         </label>
         <label class="toggle">
-          <input id="autoRotate" type="checkbox" checked>
+          <input id="autoRotate" type="checkbox">
           Auto
         </label>
         <button id="reset" type="button">Reset</button>
         <div class="grid-control">
           <label>
             <span>X</span>
-            <input id="gridX" type="number" min="8" max="64" step="4" value="24">
+            <input id="gridX" type="number" min="8" max="64" step="4" value="32">
           </label>
           <label>
             <span>Y</span>
-            <input id="gridY" type="number" min="8" max="64" step="4" value="24">
+            <input id="gridY" type="number" min="8" max="64" step="4" value="32">
           </label>
           <label>
             <span>Z</span>
-            <input id="gridZ" type="number" min="4" max="48" step="4" value="16">
+            <input id="gridZ" type="number" min="4" max="48" step="4" value="32">
           </label>
           <button id="applyGrid" type="button">Aplicar</button>
         </div>

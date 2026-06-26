@@ -1,31 +1,61 @@
 # WebGPU Life 3D
 
-Visualizacao 3D interativa do Jogo da Vida de Conway feita com WebGPU e JavaScript puro.
+Visualizacao 3D interativa de um automato celular Life-like feita com WebGPU e JavaScript puro.
 
-O projeto renderiza um grid 3D de celulas cubicas com estetica neon/cyberpunk, camera livre, zoom, rotacao automatica e simulacao executada na GPU com compute shaders.
+O projeto e uma extensao 3D inspirada no Jogo da Vida de Conway, mas nao usa a regra classica `B3/S23`. A simulacao atual usa vizinhanca Moore 3D e regra `B6/S567`, processando um volume de celulas cubicas diretamente na GPU com compute shader.
 
-## Recursos
+## Visao Geral
 
-- Grid 3D com dimensoes `X`, `Y` e `Z`.
-- Celulas vivas renderizadas como cubos 3D.
-- Celulas mortas nao sao renderizadas.
-- Simulacao na GPU usando compute shader.
-- Buffers ping-pong para atualizar o estado.
-- Renderizacao WebGPU com perspectiva e profundidade real.
-- Cores RGB neon com brilho e transparencia leve.
-- Camera 3D com orbita, pan e zoom.
-- Rotacao automatica nos eixos X, Y e Z.
-- Play/pause.
-- Controle de velocidade.
-- Reset aleatorio.
-- Alteracao do tamanho do grid.
-- Exibicao de FPS e step atual.
+- O espaco da simulacao e um grid 3D com coordenadas `x`, `y` e `z`.
+- Cada celula viva e renderizada como um cubo.
+- Cada celula morta nao e desenhada.
+- A proxima geracao e calculada na GPU, nao em loops JavaScript na CPU.
+- O renderer usa WebGPU para desenhar os cubos com perspectiva, profundidade e iluminacao.
+- A versao atual usa valores fixos em `src/main.js`: grid `32x32x32`, velocidade `1` passo por segundo e rotacao automatica desligada.
+
+## Por Que A Simulacao E 3D
+
+Na versao 2D classica do Jogo da Vida, uma celula olha ate 8 vizinhas ao redor dela em um quadrado `3x3`.
+
+Nesta versao, cada celula esta em uma coordenada `(x, y, z)` e olha um cubo `3x3x3` ao redor dela:
+
+- 9 posicoes na camada abaixo;
+- 8 posicoes na mesma camada, porque o centro e a propria celula;
+- 9 posicoes na camada acima.
+
+O cubo tem 27 posicoes no total. Como a posicao central e a propria celula, sobram 26 vizinhas possiveis. Portanto, uma celula pode nascer ou morrer por causa de vizinhos em `x`, `y` e `z`.
+
+## Regras
+
+A simulacao usa a regra Life-like 3D `B6/S567` com vizinhanca Moore 3D.
+
+- `B6`: uma celula morta nasce com exatamente 6 vizinhos ativos.
+- `S567`: uma celula viva sobrevive com 5, 6 ou 7 vizinhos ativos.
+- Em qualquer outro caso, a celula fica ou se torna morta.
+
+As bordas sao periodicas nas dimensoes `X`, `Y` e `Z`. Isso significa que, ao passar de uma borda do volume, a consulta de vizinho reaparece do lado oposto.
+
+## WebGPU E Alto Desempenho
+
+O projeto pode ser defendido como Programacao de Alto Desempenho porque usa paralelismo na GPU:
+
+- `LifeSimulation3D.js` cria buffers, bind groups e um compute pipeline.
+- `simulationShader.js` executa a regra de evolucao em um compute shader.
+- `dispatchWorkgroups(...)` despacha varios grupos de trabalho para a GPU.
+- Cada invocacao do shader calcula uma celula do grid.
+- Os estados antigo e novo ficam em dois buffers de GPU, alternados pela tecnica ping-pong.
+- O renderizador tambem usa compute shader para compactar a lista de celulas vivas antes do desenho indireto.
+
+Esse modelo evita que o JavaScript percorra todas as celulas a cada geracao. O JavaScript organiza os comandos; a GPU executa o processamento massivo.
 
 ## Estrutura
 
 ```text
 .
 ├── intdex.html
+├── README.md
+├── EXPLICACAO_DO_CODIGO.md
+├── EXPLICACAO_DA_MATEMATICA.md
 ├── EXPLICACAO_DO_FLUXO.md
 └── src
     ├── Camera.js
@@ -39,6 +69,14 @@ O projeto renderiza um grid 3D de celulas cubicas com estetica neon/cyberpunk, c
         ├── renderShader.js
         └── simulationShader.js
 ```
+
+## Fluxo De Execucao
+
+1. `main.js` verifica o suporte a WebGPU, cria o `device`, configura o canvas e instancia camera, controles, simulacao e renderizador.
+2. `LifeSimulation3D.js` cria os buffers de estado, o buffer de parametros, os bind groups e o compute pipeline da simulacao.
+3. `simulationShader.js` conta as vizinhas em 3D e calcula a proxima geracao.
+4. A cada passo, a simulacao alterna entre dois buffers: um buffer e lido como estado antigo e o outro recebe o estado novo.
+5. `LifeRenderer3D.js` prepara as celulas vivas e desenha cubos instanciados para representar o estado atual.
 
 ## Como Rodar
 
@@ -58,7 +96,7 @@ http://localhost:8001/intdex.html
 
 Use Chrome ou Edge com suporte a WebGPU.
 
-## Controles
+## Controles Ativos
 
 - Arrastar com o mouse: rotaciona a camera.
 - Scroll do mouse: zoom.
@@ -66,28 +104,15 @@ Use Chrome ou Edge com suporte a WebGPU.
 - Botao do meio ou direito + arrastar: move a camera.
 - `W`, `A`, `S`, `D`: movimenta a camera.
 - `Q` e `E`: desce/sobe a camera.
-- `Pausar/Play`: controla a simulacao.
-- `Velocidade`: altera quantos passos a simulacao tenta executar por segundo.
-- `Auto`: liga/desliga a rotacao automatica.
-- `Reset`: gera um estado inicial aleatorio.
-- `X`, `Y`, `Z` + `Aplicar`: altera o tamanho do grid.
 
-## Regras
+Observacao: existe uma barra de controles no HTML para play/pause, velocidade, reset, rotacao automatica e tamanho do grid, mas essa barra esta comentada na versao atual. Por isso, esses controles nao aparecem na interface agora; os valores fixos ficam em `src/main.js`.
 
-A simulacao usa Conway classico `B3/S23` em cada camada `Z`.
+## Observacoes Para O Artigo
 
-- Uma celula morta nasce com exatamente 3 vizinhos vivos.
-- Uma celula viva sobrevive com 2 ou 3 vizinhos vivos.
-- Em qualquer outro caso, a celula morre.
+Uma formulacao adequada e:
 
-Cada camada `Z` funciona como uma fatia do Jogo da Vida. O resultado visual continua 3D porque varias fatias sao renderizadas no espaco.
+```text
+O projeto implementa uma variacao tridimensional Life-like do Jogo da Vida, usando vizinhanca Moore 3D com 26 vizinhas e regra B6/S567. A atualizacao das celulas e executada em paralelo na GPU por meio de WebGPU compute shaders.
+```
 
-## Observacoes
-
-O arquivo principal se chama `intdex.html`, mantendo o nome atual do projeto.
-
-Se a tela mostrar aviso de WebGPU indisponivel, verifique:
-
-- Se esta abrindo por `localhost`, nao por arquivo direto.
-- Se o navegador suporta WebGPU.
-- Se a aceleracao de hardware esta ativa.
+Evite chamar a simulacao de "Jogo da Vida de Conway classico em 3D", porque a regra classica `B3/S23` nao e a regra usada no codigo atual.

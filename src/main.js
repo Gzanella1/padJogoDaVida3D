@@ -5,9 +5,9 @@ import { LifeSimulation3D } from "./LifeSimulation3D.js";
 
 const canvas = document.querySelector("#lifeCanvas");
 const unsupported = document.querySelector("#unsupported");
-const DEFAULT_SIMULATION_SPEED = 8;
-const DEFAULT_AUTO_ROTATE = true;
-const DEFAULT_GRID_DIMENSIONS = { x: 24, y: 24, z: 16 };
+const DEFAULT_SIMULATION_SPEED = 1;
+const DEFAULT_AUTO_ROTATE = false;
+const DEFAULT_GRID_DIMENSIONS = { x: 32, y: 32, z: 32 };
 // const playPauseButton = document.querySelector("#playPause");
 // const resetButton = document.querySelector("#reset");
 // const speedInput = document.querySelector("#speed");
